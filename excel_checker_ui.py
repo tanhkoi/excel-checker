@@ -23,7 +23,7 @@ def check_excel_file_advanced(file_path):
         # Step 1: Check cell P24 (確認) is not empty
         p24_value = ws['P24'].value
         if p24_value is None or str(p24_value).strip() == "":
-            return f"[ERROR] {filename}: Missing \"Confirm by\"."
+            return f"[ERROR] {filename}: \nMissing \"Confirm by\"."
 
         results.append(f" Confirm by: {str(p24_value).strip()}")
 
