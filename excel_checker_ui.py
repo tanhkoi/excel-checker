@@ -7,22 +7,23 @@ import time
 
 def check_excel_file_advanced(file_path):
     try:
-        wb = load_workbook(file_path, data_only=True)
+        # Use read_only mode for faster loading
+        wb = load_workbook(file_path, data_only=True, read_only=True)
         filename = os.path.basename(file_path)
         results = []
         
-        # Check if sheet '表紙' exists
-        if '表紙' not in wb.sheetnames:
-            return f"[ERROR] {filename}: Sheet '表紙' not found."
-
-        if 'テスト項目' not in wb.sheetnames:
-            return f"[ERROR] {filename}: Sheet 'テスト項目' not found."
+        # Check required sheets first
+        required_sheets = {'表紙', 'テスト項目'}
+        missing_sheets = required_sheets - set(wb.sheetnames)
+        if missing_sheets:
+            return f"[ERROR] {filename}: \nMissing sheet(s): {', '.join(missing_sheets)}"
 
         ws = wb['表紙']
         
         # Step 1: Check cell P24 (確認) is not empty
         p24_value = ws['P24'].value
         if p24_value is None or str(p24_value).strip() == "":
+            wb.close()  # Close workbook explicitly
             return f"[ERROR] {filename}: \nMissing \"Confirm by\"."
 
         results.append(f" Confirm by: {str(p24_value).strip()}")
@@ -31,28 +32,39 @@ def check_excel_file_advanced(file_path):
         ws2 = wb['テスト項目']
         error_rows = []
         checked_rows = []
+        status_addr = ""
+        status_col = 0
         
-        # Start from row 5 and check until find empty B cells(ID)
-        row = 5
+        for cell in ws2[3]:
+            if cell.value == "確認":
+                status_addr = cell.coordinate[:2]
+                status_col = cell.column
+                break
+
+        max_rows_to_check = 1000
+        consecutive_empty_limit = 10
         consecutive_empty = 0
         
-        max_consecutive_empty = 10  # Stop after 10 consecutive empty B cells(ID)
-        while consecutive_empty < max_consecutive_empty and row <= 1000:  # Safety limit
-            b_cell_value = ws2[f'B{row}'].value
+        for row in range(5, max_rows_to_check + 1):
+            if consecutive_empty >= consecutive_empty_limit:
+                break
+                
+            b_cell = ws2.cell(row=row, column=2)  # Column B
+            b_value = b_cell.value
             
-            if b_cell_value is not None and str(b_cell_value).strip() != "":
-                # Reset empty counter
+            if b_value is not None and str(b_value).strip():
                 consecutive_empty = 0
                 checked_rows.append(row)
-                
-                # Check corresponding BK cell(確認-Status)
-                bk_cell_value = ws2[f'BK{row}'].value
-                if bk_cell_value is None or str(bk_cell_value).strip().upper() != "OK":
-                    error_rows.append(f"Row {row} (B{row}='{str(b_cell_value).strip()}', BK{row}='{str(bk_cell_value or '').strip()}')")
+
+                status_cell = ws2.cell(row=row, column=status_col)  # Column status
+                status_value = status_cell.value
+                if status_value is None or str(status_value).strip().upper() != "OK":
+                    error_rows.append(
+                        f"Row {row} (B{row}='{str(b_value).strip()}', "
+                        f"{status_addr}{row}='{str(status_value or '').strip()}')"
+                    )
             else:
                 consecutive_empty += 1
-            
-            row += 1
         
         # Compile results
         if not checked_rows:
@@ -66,10 +78,12 @@ def check_excel_file_advanced(file_path):
                     results.append(f"  - {error_row}")
                 if len(error_rows) > 5:
                     results.append(f"  ... and {len(error_rows) - 5} more errors")
+                wb.close()  # Close workbook explicitly
                 return f"[ERROR] {filename}:\n" + "\n".join(results)
             else:
                 results.append(" All 確認 rows contain value 'OK'")
         
+        wb.close()  # Close workbook explicitly
         return f"[SUCCESS] {filename}:\n" + "\n".join(results)
         
     except Exception as e:
@@ -81,11 +95,10 @@ def find_excel_files_recursive(folder_path):
     excel_extensions = ('.xlsx', '.xlsm', '.xls')
     
     try:
-        for root_dir, dirs, files in os.walk(folder_path):
+        for root_dir, _, files in os.walk(folder_path):
             for file in files:
                 if file.lower().endswith(excel_extensions):
                     full_path = os.path.join(root_dir, file)
-                    # Store both the full path and relative path for display
                     relative_path = os.path.relpath(full_path, folder_path)
                     excel_files.append({
                         'full_path': full_path,
@@ -147,6 +160,7 @@ def check_files_thread():
         result_text.delete(1.0, tk.END)
         result_text.insert(tk.END, "Scanning folder and subfolders for Excel files...\n\n", "info")
         status_label.config(text="Scanning folders...")
+        root.update_idletasks()  # Force UI update
     
     root.after(0, show_scanning)
 
@@ -166,10 +180,14 @@ def check_files_thread():
         result_text.insert(tk.END, f"Found {total_files} Excel file(s) in folder and subfolders.\n", "info")
         result_text.insert(tk.END, f"Starting validation process...\n\n", "info")
         progress_var.set(0)
+        root.update_idletasks()  # Force UI update
     
     root.after(0, clear_and_start)
 
     # Process each file
+    success_count = 0
+    error_count = 0
+    
     for i, file_info in enumerate(excel_files_info, 1):
         full_path = file_info['full_path']
         relative_path = file_info['relative_path']
@@ -182,23 +200,28 @@ def check_files_thread():
         def add_processing_msg(rel_path=relative_path):
             result_text.insert(tk.END, f"Processing: {rel_path}...\n", "processing")
             result_text.see(tk.END)
+            root.update_idletasks()  # Force UI update
         
         root.after(0, add_processing_msg)
         
         # Check the file
         result = check_excel_file_advanced(full_path)
         
-        # Modify result to show relative path instead of just filename
+        # Count results
+        if result.startswith("[SUCCESS]"):
+            success_count += 1
+        else:
+            error_count += 1
+        
+        # Modify result to show relative path
         if result.startswith("[SUCCESS]") or result.startswith("[ERROR]"):
-            # Replace the filename with relative path in the result
             result = result.replace(f"[SUCCESS] {filename}:", f"[SUCCESS] {relative_path}:")
             result = result.replace(f"[ERROR] {filename}:", f"[ERROR] {relative_path}:")
         
-        # Update with result (this will replace the "Processing..." line)
+        # Update with result
         def update_final_result(res=result, rel_path=relative_path):
             lines = result_text.get(1.0, tk.END).strip().split('\n')
             if lines and f"Processing: {rel_path}..." in lines[-1]:
-                # Remove the processing line
                 result_text.delete(f"end-2l", tk.END)
             
             if "[SUCCESS]" in res:
@@ -206,23 +229,28 @@ def check_files_thread():
             else:
                 result_text.insert(tk.END, res + "\n\n", "error")
             result_text.see(tk.END)
+            root.update_idletasks()  # Force UI update
         
         root.after(0, update_final_result)
         
         # Small delay to make the progress visible
-        time.sleep(0.1)
+        time.sleep(0.05)
 
     # Complete the progress
     update_progress(total_files, total_files, "Complete!")
     
     # Final message
     def show_completion():
-        result_text.insert(tk.END, f"\nCompleted checking {total_files} files from folder and subfolders!", "success")
+        result_text.insert(
+            tk.END, 
+            f"\nCompleted checking {total_files} files ({success_count} successful, {error_count} errors)!", 
+            "success" if error_count == 0 else "error"
+        )
         result_text.see(tk.END)
-        status_label.config(text=f"Completed - Checked {total_files} files")
+        status_label.config(text=f"Completed - {success_count} passed, {error_count} failed")
         check_btn.config(state="normal", text="Check Excel Files")
         browse_btn.config(state="normal")
-        # Keep progress bar at 100%
+        root.update_idletasks()  # Force UI update
     
     root.after(0, show_completion)
 
