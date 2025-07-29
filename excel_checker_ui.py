@@ -14,7 +14,10 @@ def check_excel_file_advanced(file_path):
         # Check if sheet '表紙' exists
         if '表紙' not in wb.sheetnames:
             return f"[ERROR] {filename}: Sheet '表紙' not found."
-        
+
+        if 'テスト項目' not in wb.sheetnames:
+            return f"[ERROR] {filename}: Sheet 'テスト項目' not found."
+
         ws = wb['表紙']
         
         # Step 1: Check cell P24 (確認) is not empty
