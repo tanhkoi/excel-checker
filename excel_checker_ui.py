@@ -17,23 +17,23 @@ def check_excel_file_advanced(file_path):
         
         ws = wb['表紙']
         
-        # Step 1: Check P24 is not empty
+        # Step 1: Check cell P24 (確認) is not empty
         p24_value = ws['P24'].value
         if p24_value is None or str(p24_value).strip() == "":
             return f"[ERROR] {filename}: Missing \"Confirm by\"."
 
         results.append(f" Confirm by: {str(p24_value).strip()}")
 
-        # Step 2: Check BK column for rows that have data in column ID
+        # Step 2: Check Status OK for each Test case in 'テスト項目'
         ws2 = wb['テスト項目']
         error_rows = []
         checked_rows = []
         
-        # Start from row 5 and check until we find empty B cells
+        # Start from row 5 and check until find empty B cells(ID)
         row = 5
         consecutive_empty = 0
-        max_consecutive_empty = 10  # Stop after 10 consecutive empty B cells
         
+        max_consecutive_empty = 10  # Stop after 10 consecutive empty B cells(ID)
         while consecutive_empty < max_consecutive_empty and row <= 1000:  # Safety limit
             b_cell_value = ws2[f'B{row}'].value
             
@@ -42,7 +42,7 @@ def check_excel_file_advanced(file_path):
                 consecutive_empty = 0
                 checked_rows.append(row)
                 
-                # Check corresponding BK cell
+                # Check corresponding BK cell(確認-Status)
                 bk_cell_value = ws2[f'BK{row}'].value
                 if bk_cell_value is None or str(bk_cell_value).strip().upper() != "OK":
                     error_rows.append(f"Row {row} (B{row}='{str(b_cell_value).strip()}', BK{row}='{str(bk_cell_value or '').strip()}')")
