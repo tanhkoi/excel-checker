@@ -16,7 +16,7 @@ def check_excel_file_advanced(file_path):
         required_sheets = {'表紙', 'テスト項目'}
         missing_sheets = required_sheets - set(wb.sheetnames)
         if missing_sheets:
-            return f"[ERROR] {filename}: \nMissing sheet(s): {', '.join(missing_sheets)}"
+            return f"\n[ERROR] {filename}: \nMissing sheet(s): {', '.join(missing_sheets)}"
 
         ws = wb['表紙']
         
@@ -24,7 +24,7 @@ def check_excel_file_advanced(file_path):
         p24_value = ws['P24'].value
         if p24_value is None or str(p24_value).strip() == "":
             wb.close()  # Close workbook explicitly
-            return f"[ERROR] {filename}: \nMissing \"Confirm by\"."
+            return f"\n[ERROR] {filename}: \nMissing \"Confirm by\"."
 
         results.append(f" Confirm by: {str(p24_value).strip()}")
 
@@ -79,15 +79,15 @@ def check_excel_file_advanced(file_path):
                 if len(error_rows) > 5:
                     results.append(f"  ... and {len(error_rows) - 5} more errors")
                 wb.close()  # Close workbook explicitly
-                return f"[ERROR] {filename}:\n" + "\n".join(results)
+                return f"\n[ERROR] {filename}:\n" + "\n".join(results)
             else:
                 results.append(" All 確認 rows contain value 'OK'")
         
         wb.close()  # Close workbook explicitly
-        return f"[SUCCESS] {filename}:\n" + "\n".join(results)
+        return f"\n[SUCCESS] {filename}:\n" + "\n".join(results)
         
     except Exception as e:
-        return f"[ERROR] {os.path.basename(file_path)}: {str(e)}"
+        return f"\n[ERROR] {os.path.basename(file_path)}: {str(e)}"
 
 def find_excel_files_recursive(folder_path):
     """Recursively find all Excel files in folder and subfolders"""
@@ -119,7 +119,7 @@ def browse_folder():
 def update_result_text(result):
     """Thread-safe way to update the result text with colored formatting"""
     def _update():
-        if "[SUCCESS]" in result:
+        if "\n[SUCCESS]" in result:
             # Insert success message in green
             result_text.insert(tk.END, result + "\n\n", "success")
         else:
@@ -208,23 +208,23 @@ def check_files_thread():
         result = check_excel_file_advanced(full_path)
         
         # Count results
-        if result.startswith("[SUCCESS]"):
+        if result.startswith("\n[SUCCESS]"):
             success_count += 1
         else:
             error_count += 1
         
         # Modify result to show relative path
-        if result.startswith("[SUCCESS]") or result.startswith("[ERROR]"):
-            result = result.replace(f"[SUCCESS] {filename}:", f"[SUCCESS] {relative_path}:")
-            result = result.replace(f"[ERROR] {filename}:", f"[ERROR] {relative_path}:")
-        
+        if result.startswith("\n[SUCCESS]") or result.startswith("\n[ERROR]"):
+            result = result.replace(f"\n[SUCCESS] {filename}:", f"\n[SUCCESS] {relative_path}:")
+            result = result.replace(f"\n[ERROR] {filename}:", f"\n[ERROR] {relative_path}:")
+
         # Update with result
         def update_final_result(res=result, rel_path=relative_path):
             lines = result_text.get(1.0, tk.END).strip().split('\n')
             if lines and f"Processing: {rel_path}..." in lines[-1]:
                 result_text.delete(f"end-2l", tk.END)
-            
-            if "[SUCCESS]" in res:
+
+            if "\n[SUCCESS]" in res:
                 result_text.insert(tk.END, res + "\n\n", "success")
             else:
                 result_text.insert(tk.END, res + "\n\n", "error")
@@ -309,8 +309,8 @@ root.rowconfigure(0, weight=1)
 main_frame.columnconfigure(1, weight=1)
 
 # Title
-title_label = ttk.Label(main_frame, text="Excel Content Checker", style="Title.TLabel")
-title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
+# title_label = ttk.Label(main_frame, text="Excel Content Checker", style="Title.TLabel")
+# title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
 
 # Create input section frame
 input_frame = ttk.LabelFrame(main_frame, text="Configuration", padding="15")
