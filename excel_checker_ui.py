@@ -6,11 +6,6 @@ import threading
 import time
 
 def check_excel_file_advanced(file_path):
-    """
-    Advanced Excel checking:
-    1. Check cell P24 at sheet '表紙' is not empty
-    2. For each row that exists from B5 to Bn, check that BK5 to BKn contains "OK"
-    """
     try:
         wb = load_workbook(file_path, data_only=True)
         filename = os.path.basename(file_path)
@@ -25,10 +20,10 @@ def check_excel_file_advanced(file_path):
         # Step 1: Check P24 is not empty
         p24_value = ws['P24'].value
         if p24_value is None or str(p24_value).strip() == "":
-            return f"[ERROR] {filename}: \"Confirm by\" is empty."
-        
-        results.append(f" \"Confirm by\": {str(p24_value).strip()}")
-        
+            return f"[ERROR] {filename}: Missing \"Confirm by\"."
+
+        results.append(f" Confirm by: {str(p24_value).strip()}")
+
         # Step 2: Check BK column for rows that have data in column ID
         ws2 = wb['テスト項目']
         error_rows = []
@@ -77,28 +72,6 @@ def check_excel_file_advanced(file_path):
     except Exception as e:
         return f"[ERROR] {os.path.basename(file_path)}: {str(e)}"
 
-def check_excel_file(file_path, sheet_name, merge_cell, expected_content):
-    """Original simple checking function - kept for compatibility"""
-    try:
-        wb = load_workbook(file_path, data_only=True)
-        if sheet_name not in wb.sheetnames:
-            return f"[ERROR] {os.path.basename(file_path)}: Sheet '{sheet_name}' not found."
-
-        ws = wb[sheet_name]
-        value = ws[merge_cell].value
-
-        if value is None or str(value).strip() == "":
-            return f"[ERROR] {os.path.basename(file_path)}: Cell {merge_cell} is empty."
-
-        if expected_content != "" and expected_content is not None:
-            if str(value).strip() != expected_content:
-                return f"[ERROR] {os.path.basename(file_path)}: Cell {merge_cell} does not match '{expected_content}'."
-
-        return f"[SUCCESS] {os.path.basename(file_path)} passed."
-
-    except Exception as e:
-        return f"[ERROR] {os.path.basename(file_path)}: {str(e)}"
-
 def browse_folder():
     folder = filedialog.askdirectory()
     folder_path_var.set(folder)
@@ -136,7 +109,6 @@ def reset_ui():
 def check_files_thread():
     """Run the checking process in a separate thread"""
     folder_path = folder_path_var.get()
-    check_mode = check_mode_var.get()
 
     if not os.path.isdir(folder_path):
         root.after(0, lambda: messagebox.showerror("Error", "Please select a valid folder."))
@@ -154,8 +126,7 @@ def check_files_thread():
     # Clear results and show initial message
     def clear_and_start():
         result_text.delete(1.0, tk.END)
-        mode_text = "Advanced Check (P24 + BK validation)" if check_mode == "advanced" else "Simple Check"
-        result_text.insert(tk.END, f"Starting {mode_text} of {total_files} Excel file(s)...\n\n", "info")
+        result_text.insert(tk.END, f"Starting check of {total_files} Excel file(s)...\n\n", "info")
         progress_var.set(0)
     
     root.after(0, clear_and_start)
@@ -175,10 +146,7 @@ def check_files_thread():
         root.after(0, add_processing_msg)
         
         # Check the file based on selected mode
-        if check_mode == "advanced":
-            result = check_excel_file_advanced(full_path)
-        else:
-            result = check_excel_file(full_path, "表紙", "P24", "")
+        result = check_excel_file_advanced(full_path)
         
         # Update with result (this will replace the "Processing..." line)
         def update_final_result(res=result, filename=excel_file):
@@ -277,19 +245,7 @@ input_frame.columnconfigure(1, weight=1)
 
 # Variables
 folder_path_var = tk.StringVar()
-check_mode_var = tk.StringVar(value="advanced")  # "simple" or "advanced"
 progress_var = tk.DoubleVar()
-
-# Check mode selection
-ttk.Label(input_frame, text="Check Mode:", style="Header.TLabel").grid(row=0, column=0, sticky="w", pady=5)
-mode_frame = ttk.Frame(input_frame)
-mode_frame.grid(row=0, column=1, padx=(10, 0), pady=5, sticky="w")
-
-simple_radio = ttk.Radiobutton(mode_frame, text="Simple (P24 only)", variable=check_mode_var, value="simple")
-simple_radio.grid(row=0, column=0, padx=(0, 20))
-
-advanced_radio = ttk.Radiobutton(mode_frame, text="Advanced (P24 + BK validation)", variable=check_mode_var, value="advanced")
-advanced_radio.grid(row=0, column=1)
 
 # Folder selection
 ttk.Label(input_frame, text="Folder:", style="Header.TLabel").grid(row=1, column=0, sticky="w", pady=5)
@@ -297,11 +253,6 @@ folder_entry = ttk.Entry(input_frame, textvariable=folder_path_var, width=50, st
 folder_entry.grid(row=1, column=1, padx=(10, 5), pady=5, sticky=(tk.W, tk.E))
 browse_btn = ttk.Button(input_frame, text="Browse", command=browse_folder, style="Primary.TButton")
 browse_btn.grid(row=1, column=2, padx=(5, 0), pady=5)
-
-# Info label
-info_label = ttk.Label(input_frame, text="Advanced mode checks: P24 not empty + BK cells contain 'OK' for rows with data in column ID", 
-                      font=("Segoe UI", 9), foreground="#7f8c8d")
-info_label.grid(row=2, column=0, columnspan=3, pady=(10, 0), sticky="w")
 
 # Check button
 check_btn = ttk.Button(main_frame, text="Check Excel Files", command=start_check, style="Primary.TButton")
