@@ -75,6 +75,30 @@ def check_excel_file_advanced(file_path):
     except Exception as e:
         return f"[ERROR] {os.path.basename(file_path)}: {str(e)}"
 
+def find_excel_files_recursive(folder_path):
+    """Recursively find all Excel files in folder and subfolders"""
+    excel_files = []
+    excel_extensions = ('.xlsx', '.xlsm', '.xls')
+    
+    try:
+        for root_dir, dirs, files in os.walk(folder_path):
+            for file in files:
+                if file.lower().endswith(excel_extensions):
+                    full_path = os.path.join(root_dir, file)
+                    # Store both the full path and relative path for display
+                    relative_path = os.path.relpath(full_path, folder_path)
+                    excel_files.append({
+                        'full_path': full_path,
+                        'relative_path': relative_path,
+                        'filename': file
+                    })
+    except PermissionError as e:
+        print(f"Permission denied accessing: {e}")
+    except Exception as e:
+        print(f"Error scanning folders: {e}")
+    
+    return excel_files
+
 def browse_folder():
     folder = filedialog.askdirectory()
     folder_path_var.set(folder)
@@ -118,43 +142,62 @@ def check_files_thread():
         root.after(0, reset_ui)
         return
 
-    excel_files = [f for f in os.listdir(folder_path) if f.endswith(('.xlsx', '.xlsm'))]
-    if not excel_files:
-        root.after(0, lambda: messagebox.showinfo("No Files", "No Excel files found in the folder."))
+    # Show scanning message
+    def show_scanning():
+        result_text.delete(1.0, tk.END)
+        result_text.insert(tk.END, "Scanning folder and subfolders for Excel files...\n\n", "info")
+        status_label.config(text="Scanning folders...")
+    
+    root.after(0, show_scanning)
+
+    # Find all Excel files recursively
+    excel_files_info = find_excel_files_recursive(folder_path)
+    
+    if not excel_files_info:
+        root.after(0, lambda: messagebox.showinfo("No Files", "No Excel files found in the folder or its subfolders."))
         root.after(0, reset_ui)
         return
 
-    total_files = len(excel_files)
+    total_files = len(excel_files_info)
     
-    # Clear results and show initial message
+    # Clear results and show initial message with folder summary
     def clear_and_start():
         result_text.delete(1.0, tk.END)
-        result_text.insert(tk.END, f"Starting check of {total_files} Excel file(s)...\n\n", "info")
+        result_text.insert(tk.END, f"Found {total_files} Excel file(s) in folder and subfolders.\n", "info")
+        result_text.insert(tk.END, f"Starting validation process...\n\n", "info")
         progress_var.set(0)
     
     root.after(0, clear_and_start)
 
     # Process each file
-    for i, excel_file in enumerate(excel_files, 1):
-        full_path = os.path.join(folder_path, excel_file)
+    for i, file_info in enumerate(excel_files_info, 1):
+        full_path = file_info['full_path']
+        relative_path = file_info['relative_path']
+        filename = file_info['filename']
         
         # Update progress before processing
-        update_progress(i-1, total_files, excel_file)
+        update_progress(i-1, total_files, relative_path)
         
-        # Add "Processing..." message
-        def add_processing_msg(filename=excel_file):
-            result_text.insert(tk.END, f"Processing: {filename}...\n", "processing")
+        # Add "Processing..." message with relative path
+        def add_processing_msg(rel_path=relative_path):
+            result_text.insert(tk.END, f"Processing: {rel_path}...\n", "processing")
             result_text.see(tk.END)
         
         root.after(0, add_processing_msg)
         
-        # Check the file based on selected mode
+        # Check the file
         result = check_excel_file_advanced(full_path)
         
+        # Modify result to show relative path instead of just filename
+        if result.startswith("[SUCCESS]") or result.startswith("[ERROR]"):
+            # Replace the filename with relative path in the result
+            result = result.replace(f"[SUCCESS] {filename}:", f"[SUCCESS] {relative_path}:")
+            result = result.replace(f"[ERROR] {filename}:", f"[ERROR] {relative_path}:")
+        
         # Update with result (this will replace the "Processing..." line)
-        def update_final_result(res=result, filename=excel_file):
+        def update_final_result(res=result, rel_path=relative_path):
             lines = result_text.get(1.0, tk.END).strip().split('\n')
-            if lines and f"Processing: {filename}..." in lines[-1]:
+            if lines and f"Processing: {rel_path}..." in lines[-1]:
                 # Remove the processing line
                 result_text.delete(f"end-2l", tk.END)
             
@@ -174,7 +217,7 @@ def check_files_thread():
     
     # Final message
     def show_completion():
-        result_text.insert(tk.END, f"\nCompleted checking {total_files} files!", "success")
+        result_text.insert(tk.END, f"\nCompleted checking {total_files} files from folder and subfolders!", "success")
         result_text.see(tk.END)
         status_label.config(text=f"Completed - Checked {total_files} files")
         check_btn.config(state="normal", text="Check Excel Files")
