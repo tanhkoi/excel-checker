@@ -3,10 +3,12 @@ import os
 import time
 from openpyxl import load_workbook
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QPushButton, QVBoxLayout, QTextEdit, QFileDialog,
-    QLabel, QHBoxLayout, QProgressBar, QMessageBox, QLineEdit
+    QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog,
+    QLabel, QHBoxLayout, QProgressBar, QMessageBox, QLineEdit, QTableWidget, QTableWidgetItem
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QColor
+import subprocess
 
 # ----------------- Excel File Validation Logic -----------------
 def check_excel_file_advanced(file_path):
@@ -18,26 +20,25 @@ def check_excel_file_advanced(file_path):
         required_sheets = {'表紙', 'テスト項目'}
         missing_sheets = required_sheets - set(wb.sheetnames)
         if missing_sheets:
-            return f"\n[ERROR] {filename}:\nMissing sheet(s): {', '.join(missing_sheets)}"
+            return "ERROR", "Missing sheet(s): " + ", ".join(missing_sheets)
 
         ws = wb['表紙']
         p24_value = ws['P24'].value
         if p24_value is None or str(p24_value).strip() == "":
             wb.close()
-            return f"\n[ERROR] {filename}:\nMissing \"Confirm by\"."
-        results.append(f" Confirm by: {str(p24_value).strip()}")
+            return "ERROR", "Missing Confirm by"
 
         ws2 = wb['テスト項目']
         error_rows = []
         checked_rows = []
-        status_addr = ""
         status_col = 0
+        pref_col = 0
 
         for cell in ws2[3]:
             if cell.value == "確認":
-                status_addr = cell.coordinate[:2]
                 status_col = cell.column
-                break
+            if cell.value == "参考":
+                pref_col = cell.column
 
         max_rows_to_check = 1000
         consecutive_empty_limit = 10
@@ -51,35 +52,34 @@ def check_excel_file_advanced(file_path):
             if b_value is not None and str(b_value).strip():
                 consecutive_empty = 0
                 checked_rows.append(row)
+                
                 status_cell = ws2.cell(row=row, column=status_col)
                 status_value = status_cell.value
                 if status_value is None or str(status_value).strip().upper() != "OK":
-                    error_rows.append(
-                        f"Row {row} (B{row}='{str(b_value).strip()}', "
-                        f"{status_addr}{row}='{str(status_value or '').strip()}')"
-                    )
+                    error_rows.append(f"Row {row} (B{row}='{str(b_value).strip()}')")
+                
+                # pref_cell = ws2.cell(row=row, column=pref_col)
+                # if pref_cell.hyperlink:
+                    # link = pref_cell.hyperlink.target
+                    # print(link, pref_col, pref_cell.value)
+                    # if link.startswith("file:///"):
+                    #     link_ref = link[8:]
+                    #     if "!" in link_ref:
+                    #         target_sheet = link_ref.split("!")[0].strip("'")
+                    #         if target_sheet not in wb.sheetnames or target_sheet != pref_cell.value:
+                    #             error_rows.append(f"Broken link in row {row}: {link_ref} not found in workbook or does not match cell value")
+                    #     else:
+                    #         error_rows.append(f"Broken link in row {row}: {link_ref} does not point to a valid sheet")
             else:
                 consecutive_empty += 1
 
-        if not checked_rows:
-            results.append(" Did not find any Test case in sheet テスト項目")
-        else:
-            results.append(f" Checked {len(checked_rows)} Test case(s):")
-            if error_rows:
-                results.append(f" {len(error_rows)} rows failed validation:")
-                for error_row in error_rows[:5]:
-                    results.append(f"  - {error_row}")
-                if len(error_rows) > 5:
-                    results.append(f"  ... and {len(error_rows) - 5} more errors")
-                wb.close()
-                return f"\n[ERROR] {filename}:\n" + "\n".join(results)
-            else:
-                results.append(" All 確認 rows contain value 'OK'")
-
+        if error_rows:
+            wb.close()
+            return "ERROR", f"{len(error_rows)} rows status != 'OK'"
         wb.close()
-        return f"\n[SUCCESS] {filename}:\n" + "\n".join(results)
+        return "OK", ""
     except Exception as e:
-        return f"\n[ERROR] {os.path.basename(file_path)}: {str(e)}"
+        return "ERROR", str(e)
 
 def find_excel_files_recursive(folder_path):
     excel_files = []
@@ -93,7 +93,7 @@ def find_excel_files_recursive(folder_path):
 # ----------------- Worker Thread -----------------
 class ExcelCheckWorker(QThread):
     progress_changed = pyqtSignal(int)
-    log_message = pyqtSignal(str)
+    file_result = pyqtSignal(str, str, str)  # status, relative_path, error
     finished_signal = pyqtSignal()
 
     def __init__(self, folder_path):
@@ -104,44 +104,26 @@ class ExcelCheckWorker(QThread):
         files = find_excel_files_recursive(self.folder_path)
         total = len(files)
         if not files:
-            self.log_message.emit("No Excel files found in the selected folder.")
+            self.file_result.emit("INFO", "", "No Excel files found.")
             self.finished_signal.emit()
             return
 
-        self.log_message.emit(f"Found {total} Excel files. Starting validation...\n")
-        success_count, error_count = 0, 0
-
         for i, file_path in enumerate(files, 1):
-            # Get relative path for logs
             relative_path = os.path.relpath(file_path, self.folder_path)
-
-            result = check_excel_file_advanced(file_path)
-
-            # Replace file name with relative path in result
-            filename = os.path.basename(file_path)
-            result = result.replace(f"{filename}:", f"{relative_path}:")
-
-            if result.startswith("\n[SUCCESS]"):
-                success_count += 1
-            else:
-                error_count += 1
-
-            self.log_message.emit(result)
+            status, error_msg = check_excel_file_advanced(file_path)
+            self.file_result.emit(status, relative_path, error_msg)
             self.progress_changed.emit(int((i / total) * 100))
             time.sleep(0.05)
 
-        self.log_message.emit(f"\nCompleted: {total} files ({success_count} passed, {error_count} failed)")
         self.finished_signal.emit()
-
 
 # ----------------- PyQt Main Window -----------------
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Excel Validator")
-        self.setGeometry(100, 100, 600, 400)
+        self.setGeometry(100, 100, 800, 500)
 
-        # Layouts
         main_layout = QVBoxLayout()
         input_layout = QHBoxLayout()
         button_layout = QHBoxLayout()
@@ -165,27 +147,30 @@ class MainWindow(QWidget):
 
         button_layout.addWidget(self.btn_execute)
 
-        # Log box and progress bar
-        self.log_box = QTextEdit()
-        self.log_box.setReadOnly(True)
+        # Table widget
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Status", "Path file", "Errors"])
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(self.table.SelectRows)
+        self.table.itemDoubleClicked.connect(self.open_selected_file)
+
+        # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setAlignment(Qt.AlignCenter)
         self.progress_bar.setValue(0)
 
-        # Add widgets
+        # Layout add
         main_layout.addLayout(input_layout)
         main_layout.addLayout(button_layout)
-        main_layout.addWidget(self.log_box)
+        main_layout.addWidget(self.table)
         main_layout.addWidget(self.progress_bar)
         self.setLayout(main_layout)
 
         self.worker = None
 
     def on_folder_input_change(self, text):
-        if os.path.isdir(text.strip()):
-            self.btn_execute.setEnabled(True)
-        else:
-            self.btn_execute.setEnabled(False)
+        self.btn_execute.setEnabled(os.path.isdir(text.strip()))
 
     def select_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder")
@@ -199,18 +184,45 @@ class MainWindow(QWidget):
             return
 
         self.progress_bar.setValue(0)
-        self.log_box.clear()
+        self.table.setRowCount(0)
         self.btn_execute.setEnabled(False)
 
         self.worker = ExcelCheckWorker(folder_path)
         self.worker.progress_changed.connect(self.progress_bar.setValue)
-        self.worker.log_message.connect(self.log_box.append)
+        self.worker.file_result.connect(self.add_table_row)
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.start()
 
+    def add_table_row(self, status, path, error):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        status_item = QTableWidgetItem(status)
+        path_item = QTableWidgetItem(path)
+        error_item = QTableWidgetItem(error)
+        if status == "OK":
+            status_item.setForeground(QColor("green"))
+        elif status == "ERROR":
+            status_item.setForeground(QColor("red"))
+        self.table.setItem(row, 0, status_item)
+        self.table.setItem(row, 1, path_item)
+        self.table.setItem(row, 2, error_item)
+
+    def open_selected_file(self, item):
+        row = item.row()
+        path = os.path.join(self.folder_input.text(), self.table.item(row, 1).text())
+        if os.path.exists(path):
+            if os.name == 'nt':
+                os.startfile(path)
+            elif sys.platform == 'darwin':
+                subprocess.call(['open', path])
+            else:
+                subprocess.call(['xdg-open', path])
+        else:
+            QMessageBox.warning(self, "File Not Found", f"File not found: {path}")
+
     def on_finished(self):
         self.btn_execute.setEnabled(True)
-        self.log_box.append("\nValidation completed.\n")
+        QMessageBox.information(self, "Done", "Validation completed.")
 
 # ----------------- Entry Point -----------------
 if __name__ == "__main__":
