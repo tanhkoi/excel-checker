@@ -12,7 +12,6 @@ import subprocess
 
 # --- Helper Functions ---
 def check_required_sheets(wb, required_sheets={'表紙', 'テスト項目'}):
-    """Check if all required sheets exist in the workbook."""
     missing_sheets = required_sheets - set(wb.sheetnames)
     if missing_sheets:
         return f"Missing sheet(s): {', '.join(missing_sheets)}"
@@ -20,18 +19,14 @@ def check_required_sheets(wb, required_sheets={'表紙', 'テスト項目'}):
 
 
 def check_confirm_by(wb):
-    """Check if Confirm by (P24 in 表紙) is not empty."""
-    if '表紙' not in wb.sheetnames:
-        return None
     ws = wb['表紙']
     p24_value = ws['P24'].value
     if p24_value is None or str(p24_value).strip() == "":
-        return "Missing Confirm by"
+        return "Missing Confirm"
     return None
 
 
 def find_column_indexes(ws, headers=("確認", "参考"), header_row=3):
-    """Find the column indexes of the headers in the given row."""
     col_indexes = {}
     for cell in ws[header_row]:
         if cell.value in headers:
@@ -40,9 +35,6 @@ def find_column_indexes(ws, headers=("確認", "参考"), header_row=3):
 
 
 def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
-    """Check rows in テスト項目 sheet for rows where status != 'OK'."""
-    if 'テスト項目' not in wb.sheetnames:
-        return None
     ws = wb['テスト項目']
     col_indexes = find_column_indexes(ws)
     status_col = col_indexes.get("確認")
@@ -63,18 +55,17 @@ def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
             status_cell = ws.cell(row=row, column=status_col)
             status_value = status_cell.value
             if status_value is None or str(status_value).strip().upper() != "OK":
-                error_rows.append(f"Row {row} (B{row}='{str(b_value).strip()}')")
+                error_rows.append(f"{str(b_value).strip()}")
         else:
             consecutive_empty += 1
 
     if error_rows:
-        return f"{len(error_rows)} rows status != 'OK': " + "; ".join(error_rows)
+        return f"{len(error_rows)} row(s) status != 'OK': " + "; ".join(error_rows)
     return None
 
 
 # --- Main Function ---
 def check_excel_file_advanced(file_path):
-    """Main function to check Excel file based on multiple criteria."""
     try:
         wb = load_workbook(file_path, data_only=True, read_only=True)
         error_messages = []
@@ -112,7 +103,7 @@ def find_excel_files_recursive(folder_path):
 # ----------------- Worker Thread -----------------
 class ExcelCheckWorker(QThread):
     progress_changed = pyqtSignal(int)
-    file_result = pyqtSignal(str, str, str)  # status, relative_path, error
+    file_result = pyqtSignal(str, str, str, str)  # prefix_path, relative_path, status, error
     finished_signal = pyqtSignal()
 
     def __init__(self, folder_path):
@@ -123,14 +114,14 @@ class ExcelCheckWorker(QThread):
         files = find_excel_files_recursive(self.folder_path)
         total = len(files)
         if not files:
-            self.file_result.emit("INFO", "", "No Excel files found.")
+            self.file_result.emit(self.folder_path, "", "INFO", "No Excel files found.")
             self.finished_signal.emit()
             return
 
         for i, file_path in enumerate(files, 1):
             relative_path = os.path.relpath(file_path, self.folder_path)
             status, error_msg = check_excel_file_advanced(file_path)
-            self.file_result.emit(status, relative_path, error_msg)
+            self.file_result.emit(self.folder_path, relative_path, status, error_msg)
             self.progress_changed.emit(int((i / total) * 100))
             time.sleep(0.05)
 
@@ -168,12 +159,11 @@ class MainWindow(QWidget):
 
         # Table widget
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Status", "Path file", "Errors"])
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Prefix Path", "Relative Path", "Status", "Errors"])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(self.table.SelectRows)
         self.table.itemDoubleClicked.connect(self.open_selected_file)
-        # self.table.setSortingEnabled(True)
 
         # Progress bar
         self.progress_bar = QProgressBar()
@@ -220,10 +210,11 @@ class MainWindow(QWidget):
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.start()
 
-    def add_table_row(self, status, path, error):
+    def add_table_row(self, prefix_path, path, status, error):
         self.table.setSortingEnabled(False)
         row = self.table.rowCount()
         self.table.insertRow(row)
+        prefix_item = QTableWidgetItem(prefix_path)
         status_item = QTableWidgetItem(status)
         path_item = QTableWidgetItem(path)
         error_item = QTableWidgetItem(error)
@@ -231,9 +222,10 @@ class MainWindow(QWidget):
             status_item.setForeground(QColor("green"))
         elif status == "ERROR":
             status_item.setForeground(QColor("red"))
-        self.table.setItem(row, 0, status_item)
+        self.table.setItem(row, 0, prefix_item)
         self.table.setItem(row, 1, path_item)
-        self.table.setItem(row, 2, error_item)
+        self.table.setItem(row, 2, status_item)
+        self.table.setItem(row, 3, error_item)
         self.table.setSortingEnabled(True)
 
     def open_selected_file(self, item):
