@@ -24,9 +24,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from datetime import datetime
 
+
 def load_config(config_path="config.json"):
     with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 CONFIG = load_config()
 
@@ -35,8 +37,33 @@ CATEGORY_PREFIX_MAP = CONFIG["category_prefix_map"]
 INVALID_SHEETS = CONFIG["invalid_sheets"]
 REQUIRED_SHEETS = CONFIG["required_sheets"]
 EXCEL_EXTENSIONS = tuple(CONFIG["excel_extensions"])
+INVALID_CHARS = CONFIG["invalid_chars"]
+INVALID_TEXT = CONFIG["invalid_text"]
+
 
 # --- Helper Functions ---
+def check_invalid_text(wb):
+    for sheet in wb.sheetnames:
+        ws = wb[sheet]
+        for row in ws.iter_rows(values_only=True):
+            for cell in row:
+                if isinstance(cell, str) and any(text in cell for text in INVALID_TEXT):
+                    return f"Contains invalid text in sheet '{sheet}'"
+    return None
+
+
+def check_contains_vietnamese_characters(wb):
+    for sheet in wb.sheetnames:
+        ws = wb[sheet]
+        for row in ws.iter_rows(values_only=True):
+            for cell in row:
+                if isinstance(cell, str) and any(
+                    char in cell for char in INVALID_CHARS
+                ):
+                    return f"Contains vietnamese characters in sheet '{sheet}'"
+    return None
+
+
 def check_valid_filename(file_path):
     filename = os.path.basename(file_path)
     parts = os.path.normpath(file_path).split(os.sep)
@@ -124,6 +151,10 @@ def check_excel_file_advanced(file_path, options):
         if err := check_required_sheets(wb):
             error_messages.append(err)
 
+        if options.get("check_invalid_sheets", True):
+            if err := check_invalid_sheet(wb):
+                error_messages.append(err)
+
         if options.get("check_confirm_cell", True):
             if err := check_confirm_by(wb):
                 error_messages.append(err)
@@ -132,8 +163,12 @@ def check_excel_file_advanced(file_path, options):
             if err := check_status_in_test_items(wb):
                 error_messages.append(err)
 
-        if options.get("check_invalid_sheets", True):
-            if err := check_invalid_sheet(wb):
+        if options.get("check_contains_vietnamese_characters", True):
+            if err := check_contains_vietnamese_characters(wb):
+                error_messages.append(err)
+
+        if options.get("check_invalid_text", True):
+            if err := check_invalid_text(wb):
                 error_messages.append(err)
 
         wb.close()
@@ -230,21 +265,29 @@ class MainWindow(QWidget):
 
         # Options section
         option_layout = QVBoxLayout()
-        self.sheet_check_cb = QCheckBox("Check contains invalid sheets")
-        self.filename_check_cb = QCheckBox("Check filename prefix")
-        self.confirm_cell_cb = QCheckBox("Check 表紙 Confirm")
-        self.testcase_status_cb = QCheckBox("Check テスト項目 test status")
+        self.confirm_cell_cb = QCheckBox("1. Check confirm")
+        self.testcase_status_cb = QCheckBox("2. Check test case status")
+        self.filename_check_cb = QCheckBox("3. Check filename prefix")
+        self.sheet_check_cb = QCheckBox("4. Check contains invalid sheets")
+        self.check_contains_vietnamese_characters_cb = QCheckBox(
+            "5. Check contains Vietnamese characters for JP files"
+        )
+        self.check_invalid_text_cb = QCheckBox("6. Check contains invalid text")
 
         # Set defaults
-        self.sheet_check_cb.setChecked(True)
-        self.filename_check_cb.setChecked(True)
         self.confirm_cell_cb.setChecked(True)
         self.testcase_status_cb.setChecked(True)
+        self.filename_check_cb.setChecked(True)
+        self.sheet_check_cb.setChecked(True)
+        self.check_contains_vietnamese_characters_cb.setChecked(False)
+        self.check_invalid_text_cb.setChecked(True)
 
-        option_layout.addWidget(self.sheet_check_cb)
-        option_layout.addWidget(self.filename_check_cb)
         option_layout.addWidget(self.confirm_cell_cb)
         option_layout.addWidget(self.testcase_status_cb)
+        option_layout.addWidget(self.filename_check_cb)
+        option_layout.addWidget(self.sheet_check_cb)
+        option_layout.addWidget(self.check_contains_vietnamese_characters_cb)
+        option_layout.addWidget(self.check_invalid_text_cb)
 
         # Button section
         button_layout = QHBoxLayout()
@@ -279,11 +322,19 @@ class MainWindow(QWidget):
         self.progress_bar.setValue(0)
 
         # Status label
+        config_info_label = QLabel(
+            "Note: Case 3, 4, 5, and 6 are configurable.\n"
+            "You can change their rules in the 'config.json' file located in the tool's directory."
+        )
+        config_info_label.setStyleSheet("color: gray; font-size: 11px;")
+        config_info_label.setWordWrap(True)
+
         self.status_label = QLabel("Ready")
 
         # Assemble main layout
         main_layout.addLayout(input_layout)
         main_layout.addLayout(button_layout)
+        main_layout.addWidget(config_info_label)
         main_layout.addLayout(option_layout)
         main_layout.addWidget(self.table)
         main_layout.addWidget(self.progress_bar)
@@ -323,6 +374,8 @@ class MainWindow(QWidget):
             "check_filename_prefix": self.filename_check_cb.isChecked(),
             "check_confirm_cell": self.confirm_cell_cb.isChecked(),
             "check_testcase_status": self.testcase_status_cb.isChecked(),
+            "check_contains_vietnamese_characters": self.check_contains_vietnamese_characters_cb.isChecked(),
+            "check_invalid_text": self.check_invalid_text_cb.isChecked(),
         }
 
         load_config()
@@ -368,14 +421,25 @@ class MainWindow(QWidget):
 
         if os.path.exists(path):
             try:
-                if os.name == "nt":
-                    os.startfile(path)
-                elif sys.platform == "darwin":
-                    subprocess.call(["open", path])
+                modifiers = QApplication.keyboardModifiers()
+                if modifiers == Qt.ControlModifier:
+                    folder_path = os.path.dirname(path)
+                    if os.name == "nt":
+                        os.startfile(folder_path)
+                    elif sys.platform == "darwin":
+                        subprocess.call(["open", folder_path])
+                    else:
+                        subprocess.call(["xdg-open", folder_path])
                 else:
-                    subprocess.call(["xdg-open", path])
+                    # Open the file
+                    if os.name == "nt":
+                        os.startfile(path)
+                    elif sys.platform == "darwin":
+                        subprocess.call(["open", path])
+                    else:
+                        subprocess.call(["xdg-open", path])
             except Exception as e:
-                QMessageBox.warning(self, "Error", f"Could not open file: {str(e)}")
+                QMessageBox.warning(self, "Error", f"Could not open: {str(e)}")
         else:
             QMessageBox.warning(self, "File Not Found", f"File not found: {path}")
 
@@ -396,26 +460,25 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "No Data", "There are no results to export.")
             return
 
-        default_name = f"Excel_Check_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        default_name = (
+            f"Excel_Check_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
         # Get save file path
         file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Results",
-            default_name,
-            "Excel Files (*.xlsx);;All Files (*)"
+            self, "Save Results", default_name, "Excel Files (*.xlsx);;All Files (*)"
         )
 
         if not file_path:
             return  # User cancelled
 
         # Ensure .xlsx extension
-        if not file_path.lower().endswith('.xlsx'):
-            file_path += '.xlsx'
+        if not file_path.lower().endswith(".xlsx"):
+            file_path += ".xlsx"
 
         try:
             from openpyxl import Workbook
             from openpyxl.styles import Font, Color, Alignment
-            
+
             wb = Workbook()
             ws = wb.active
             ws.title = "Check Results"
@@ -425,13 +488,15 @@ class MainWindow(QWidget):
             for col, header in enumerate(headers, 1):
                 cell = ws.cell(row=1, column=col, value=header)
                 cell.font = Font(bold=True)
-                cell.alignment = Alignment(horizontal='center')
+                cell.alignment = Alignment(horizontal="center")
 
             # Write data
             for row in range(self.table.rowCount()):
                 for col in range(self.table.columnCount()):
                     item = self.table.item(row, col)
-                    ws.cell(row=row+2, column=col+1, value=item.text() if item else "")
+                    ws.cell(
+                        row=row + 2, column=col + 1, value=item.text() if item else ""
+                    )
 
             # Auto-size columns
             for column in ws.columns:
@@ -447,10 +512,15 @@ class MainWindow(QWidget):
                 ws.column_dimensions[column_letter].width = adjusted_width
 
             wb.save(file_path)
-            QMessageBox.information(self, "Success", f"Results exported to:\n{file_path}")
+            QMessageBox.information(
+                self, "Success", f"Results exported to:\n{file_path}"
+            )
 
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{str(e)}")
+            QMessageBox.critical(
+                self, "Export Error", f"Failed to export results:\n{str(e)}"
+            )
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
