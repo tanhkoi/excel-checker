@@ -3,24 +3,35 @@ import os
 import time
 from openpyxl import load_workbook
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog,
-    QLabel, QHBoxLayout, QProgressBar, QMessageBox, QLineEdit, QTableWidget, QTableWidgetItem
+    QApplication,
+    QWidget,
+    QPushButton,
+    QVBoxLayout,
+    QFileDialog,
+    QLabel,
+    QHBoxLayout,
+    QProgressBar,
+    QMessageBox,
+    QLineEdit,
+    QTableWidget,
+    QTableWidgetItem,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
 import subprocess
 
+
 # --- Helper Functions ---
-def check_required_sheets(wb, required_sheets={'表紙', 'テスト項目'}):
-    missing_sheets = required_sheets - set(wb.sheetnames)
-    if missing_sheets:
-        return f"Missing sheet(s): {', '.join(missing_sheets)}"
+def check_required_sheets(wb, required_sheets={"表紙", "テスト項目"}):
+    for sheet in required_sheets:
+        if sheet not in wb.sheetnames:
+            return f"Missing required sheet: {sheet}"
     return None
 
 
 def check_confirm_by(wb):
-    ws = wb['表紙']
-    p24_value = ws['P24'].value
+    ws = wb["表紙"]
+    p24_value = ws["P24"].value
     if p24_value is None or str(p24_value).strip() == "":
         return "Missing Confirm"
     return None
@@ -35,7 +46,7 @@ def find_column_indexes(ws, headers=("確認", "参考"), header_row=3):
 
 
 def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
-    ws = wb['テスト項目']
+    ws = wb["テスト項目"]
     col_indexes = find_column_indexes(ws)
     status_col = col_indexes.get("確認")
 
@@ -72,13 +83,16 @@ def check_excel_file_advanced(file_path):
 
         # Run each check
         err = check_required_sheets(wb)
-        if err: error_messages.append(err)
+        if err:
+            error_messages.append(err)
 
         err = check_confirm_by(wb)
-        if err: error_messages.append(err)
+        if err:
+            error_messages.append(err)
 
         err = check_status_in_test_items(wb)
-        if err: error_messages.append(err)
+        if err:
+            error_messages.append(err)
 
         wb.close()
 
@@ -93,17 +107,20 @@ def check_excel_file_advanced(file_path):
 
 def find_excel_files_recursive(folder_path):
     excel_files = []
-    excel_extensions = ('.xlsx', '.xlsm', '.xls')
+    excel_extensions = (".xlsx", ".xlsm", ".xls")
     for root_dir, _, files in os.walk(folder_path):
         for file in files:
             if file.lower().endswith(excel_extensions):
                 excel_files.append(os.path.join(root_dir, file))
     return excel_files
 
+
 # ----------------- Worker Thread -----------------
 class ExcelCheckWorker(QThread):
     progress_changed = pyqtSignal(int)
-    file_result = pyqtSignal(str, str, str, str)  # prefix_path, relative_path, status, error
+    file_result = pyqtSignal(
+        str, str, str, str
+    )  # prefix_path, relative_path, status, error
     finished_signal = pyqtSignal()
 
     def __init__(self, folder_path):
@@ -126,6 +143,7 @@ class ExcelCheckWorker(QThread):
             time.sleep(0.05)
 
         self.finished_signal.emit()
+
 
 # ----------------- PyQt Main Window -----------------
 class MainWindow(QWidget):
@@ -160,7 +178,9 @@ class MainWindow(QWidget):
         # Table widget
         self.table = QTableWidget()
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Prefix Path", "Relative Path", "Status", "Errors"])
+        self.table.setHorizontalHeaderLabels(
+            ["Prefix Path", "Relative Path", "Status", "Errors"]
+        )
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(self.table.SelectRows)
         self.table.itemDoubleClicked.connect(self.open_selected_file)
@@ -184,7 +204,7 @@ class MainWindow(QWidget):
 
     def select_folder(self):
         current_path = self.folder_input.text().strip()
-        
+
         if os.path.isdir(current_path):
             start_dir = current_path
         else:
@@ -197,7 +217,9 @@ class MainWindow(QWidget):
     def start_execution(self):
         folder_path = self.folder_input.text().strip()
         if not os.path.isdir(folder_path):
-            QMessageBox.warning(self, "Invalid Folder", "Please provide a valid folder path.")
+            QMessageBox.warning(
+                self, "Invalid Folder", "Please provide a valid folder path."
+            )
             return
 
         self.progress_bar.setValue(0)
@@ -214,9 +236,10 @@ class MainWindow(QWidget):
         self.table.setSortingEnabled(False)
         row = self.table.rowCount()
         self.table.insertRow(row)
+        correct_path = path.replace("\\", "/")
         prefix_item = QTableWidgetItem(prefix_path)
         status_item = QTableWidgetItem(status)
-        path_item = QTableWidgetItem(path)
+        path_item = QTableWidgetItem(correct_path)
         error_item = QTableWidgetItem(error)
         if status == "OK":
             status_item.setForeground(QColor("green"))
@@ -232,18 +255,19 @@ class MainWindow(QWidget):
         row = item.row()
         path = os.path.join(self.folder_input.text(), self.table.item(row, 1).text())
         if os.path.exists(path):
-            if os.name == 'nt':
+            if os.name == "nt":
                 os.startfile(path)
-            elif sys.platform == 'darwin':
-                subprocess.call(['open', path])
+            elif sys.platform == "darwin":
+                subprocess.call(["open", path])
             else:
-                subprocess.call(['xdg-open', path])
+                subprocess.call(["xdg-open", path])
         else:
             QMessageBox.warning(self, "File Not Found", f"File not found: {path}")
 
     def on_finished(self):
         self.btn_execute.setEnabled(True)
         QMessageBox.information(self, "Done", "Check completed.")
+
 
 # ----------------- Entry Point -----------------
 if __name__ == "__main__":
