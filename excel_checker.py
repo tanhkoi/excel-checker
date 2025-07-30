@@ -22,6 +22,7 @@ from PyQt5.QtGui import QColor
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+from datetime import datetime
 
 def load_config(config_path="config.json"):
     with open(config_path, "r", encoding="utf-8") as f:
@@ -253,6 +254,10 @@ class MainWindow(QWidget):
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self.stop_execution)
+        self.btn_export = QPushButton("Export Results")
+        self.btn_export.setEnabled(False)
+        self.btn_export.clicked.connect(self.export_results)
+        button_layout.addWidget(self.btn_export)
 
         button_layout.addWidget(self.btn_execute)
         button_layout.addWidget(self.btn_stop)
@@ -299,6 +304,7 @@ class MainWindow(QWidget):
             self.folder_input.setText(folder)
 
     def start_execution(self):
+        self.btn_export.setEnabled(False)
         folder_path = self.folder_input.text().strip()
         if not os.path.isdir(folder_path):
             QMessageBox.warning(
@@ -353,6 +359,9 @@ class MainWindow(QWidget):
         for col, item in enumerate(items):
             self.table.setItem(row, col, item)
 
+        if row == 0:
+            self.btn_export.setEnabled(True)
+
     def open_selected_file(self, item):
         row = item.row()
         path = os.path.join(self.folder_input.text(), self.table.item(row, 1).text())
@@ -382,6 +391,66 @@ class MainWindow(QWidget):
             self.worker.wait()
         event.accept()
 
+    def export_results(self):
+        if self.table.rowCount() == 0:
+            QMessageBox.warning(self, "No Data", "There are no results to export.")
+            return
+
+        default_name = f"Excel_Check_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        # Get save file path
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Results",
+            default_name,
+            "Excel Files (*.xlsx);;All Files (*)"
+        )
+
+        if not file_path:
+            return  # User cancelled
+
+        # Ensure .xlsx extension
+        if not file_path.lower().endswith('.xlsx'):
+            file_path += '.xlsx'
+
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Color, Alignment
+            
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Check Results"
+
+            # Write headers
+            headers = ["Prefix Path", "Relative Path", "Status", "Errors"]
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center')
+
+            # Write data
+            for row in range(self.table.rowCount()):
+                for col in range(self.table.columnCount()):
+                    item = self.table.item(row, col)
+                    ws.cell(row=row+2, column=col+1, value=item.text() if item else "")
+
+            # Auto-size columns
+            for column in ws.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = (max_length + 2) * 1.2
+                ws.column_dimensions[column_letter].width = adjusted_width
+
+            wb.save(file_path)
+            QMessageBox.information(self, "Success", f"Results exported to:\n{file_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{str(e)}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
