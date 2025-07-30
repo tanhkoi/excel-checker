@@ -20,42 +20,43 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
 
+def load_config(config_path="config.json"):
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+CONFIG = load_config()
+
+# --- Constants ---
+CATEGORY_PREFIX_MAP = CONFIG["category_prefix_map"]
+INVALID_SHEETS = CONFIG["invalid_sheets"]
+REQUIRED_SHEETS = CONFIG["required_sheets"]
+EXCEL_EXTENSIONS = tuple(CONFIG["excel_extensions"])
 
 # --- Helper Functions ---
 def check_valid_filename(file_path):
-    category_prefix_map = {
-        "BO-API": "共通書店システムのオンプレミス化対応_単体テスト報告書_BO",
-        "BO-WEB": "共通書店システムのオンプレミス化対応_単体テスト報告書_BO",
-        "QUEUE-API": "共通書店システムのオンプレミス化対応_単体テスト報告書_BO",
-        "EXT-API": "共通書店システムのオンプレミス化対応_単体テスト報告書_EXT",
-        "DB-Functions": "共通書店システムのオンプレミス化対応_単体テスト報告書_DB",
-        "DB-Packages": "共通書店システムのオンプレミス化対応_単体テスト報告書_DB",
-        "DB-Sequences": "共通書店システムのオンプレミス化対応_単体テスト報告書_DB",
-        "DB-Tables": "共通書店システムのオンプレミス化対応_単体テスト報告書_DB",
-    }
-
     filename = os.path.basename(file_path)
     parts = os.path.normpath(file_path).split(os.sep)
 
-    for folder_name, expected_prefix in category_prefix_map.items():
+    for folder_name, expected_prefix in CATEGORY_PREFIX_MAP.items():
         if folder_name in parts:
             if not filename.startswith(expected_prefix):
                 return f"Invalid filename for '{folder_name}'"
-            break  # Stop checking after first match
-
+            break
     return None
 
 
-def check_invalid_sheet(wb, invalid_sheets={"HOW TO TEST"}):
-    for sheet in invalid_sheets:
+def check_invalid_sheet(wb):
+    for sheet in INVALID_SHEETS:
         if sheet in wb.sheetnames:
             return f"Contains invalid sheet: {sheet}"
     return None
 
 
-def check_required_sheets(wb, required_sheets={"表紙", "テスト項目"}):
-    for sheet in required_sheets:
+def check_required_sheets(wb):
+    for sheet in REQUIRED_SHEETS:
         if sheet not in wb.sheetnames:
             return f"Missing required sheet: {sheet}"
     return None
@@ -65,89 +66,77 @@ def check_confirm_by(wb):
     if "表紙" not in wb.sheetnames:
         return None
     ws = wb["表紙"]
-    p24_value = ws["P24"].value
-    if p24_value is None or str(p24_value).strip() == "":
-        return "Missing Confirm"
-    return None
+    return (
+        "Missing Confirm"
+        if ws["P24"].value is None or not str(ws["P24"].value).strip()
+        else None
+    )
 
 
 def find_column_indexes(ws, headers=("確認", "参考"), header_row=3):
-    col_indexes = {}
-    for cell in ws[header_row]:
-        if cell.value in headers:
-            col_indexes[cell.value] = cell.column
-    return col_indexes
+    return {cell.value: cell.column for cell in ws[header_row] if cell.value in headers}
 
 
 def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
     if "テスト項目" not in wb.sheetnames:
         return None
+
     ws = wb["テスト項目"]
     col_indexes = find_column_indexes(ws)
-    status_col = col_indexes.get("確認")
-
-    if not status_col:
+    if "確認" not in col_indexes:
         return "Column '確認' not found"
 
+    status_col = col_indexes["確認"]
     error_rows = []
     consecutive_empty = 0
 
     for row in range(5, max_rows + 1):
         if consecutive_empty >= empty_limit:
             break
+
         b_cell = ws.cell(row=row, column=2)
-        b_value = b_cell.value
-        if b_value and str(b_value).strip():
+        if b_cell.value and str(b_cell.value).strip():
             consecutive_empty = 0
-            status_cell = ws.cell(row=row, column=status_col)
-            status_value = status_cell.value
+            status_value = ws.cell(row=row, column=status_col).value
             if status_value is None or str(status_value).strip().upper() != "OK":
-                error_rows.append(f"{str(b_value).strip()}")
+                error_rows.append(str(b_cell.value).strip())
         else:
             consecutive_empty += 1
 
-    if error_rows:
-        return f"{len(error_rows)} TC(s) != 'OK': " + "; ".join(error_rows)
-    return None
+    return (
+        f"{len(error_rows)} TC(s) != 'OK': " + "; ".join(error_rows)
+        if error_rows
+        else None
+    )
 
 
 # --- Main Function ---
 def check_excel_file_advanced(file_path, options):
     try:
-        wb = load_workbook(file_path, data_only=True, read_only=True)
         error_messages = []
+        wb = load_workbook(file_path, data_only=True, read_only=True)
 
-        # Run each check
         if options.get("check_filename_prefix", True):
-            err = check_valid_filename(file_path)
-            if err:
+            if err := check_valid_filename(file_path):
                 error_messages.append(err)
 
-        err = check_required_sheets(wb)
-        if err:
+        if err := check_required_sheets(wb):
             error_messages.append(err)
 
         if options.get("check_confirm_cell", True):
-            err = check_confirm_by(wb)
-            if err:
+            if err := check_confirm_by(wb):
                 error_messages.append(err)
 
         if options.get("check_testcase_status", True):
-            err = check_status_in_test_items(wb)
-            if err:
+            if err := check_status_in_test_items(wb):
                 error_messages.append(err)
 
         if options.get("check_invalid_sheets", True):
-            err = check_invalid_sheet(wb)
-            if err:
+            if err := check_invalid_sheet(wb):
                 error_messages.append(err)
 
         wb.close()
-
-        # Return aggregated results
-        if error_messages:
-            return "ERROR", ", ".join(error_messages)
-        return "OK", ""
+        return ("ERROR", ", ".join(error_messages)) if error_messages else ("OK", "")
 
     except Exception as e:
         return "ERROR", str(e)
@@ -155,10 +144,9 @@ def check_excel_file_advanced(file_path, options):
 
 def find_excel_files_recursive(folder_path):
     excel_files = []
-    excel_extensions = (".xlsx", ".xlsm", ".xls")
     for root_dir, _, files in os.walk(folder_path):
         for file in files:
-            if file.lower().endswith(excel_extensions):
+            if file.lower().endswith(EXCEL_EXTENSIONS):
                 excel_files.append(os.path.join(root_dir, file))
     return excel_files
 
@@ -171,10 +159,12 @@ class ExcelCheckWorker(QThread):
     )  # prefix_path, relative_path, status, error
     finished_signal = pyqtSignal()
 
-    def __init__(self, folder_path, options):
+    def __init__(self, folder_path, options, max_workers=4):
         super().__init__()
         self.folder_path = folder_path
         self.options = options
+        self.max_workers = max_workers
+        self._is_running = True
 
     def run(self):
         files = find_excel_files_recursive(self.folder_path)
@@ -184,14 +174,32 @@ class ExcelCheckWorker(QThread):
             self.finished_signal.emit()
             return
 
-        for i, file_path in enumerate(files, 1):
-            relative_path = os.path.relpath(file_path, self.folder_path)
-            status, error_msg = check_excel_file_advanced(file_path, self.options)
-            self.file_result.emit(self.folder_path, relative_path, status, error_msg)
-            self.progress_changed.emit(int((i / total) * 100))
-            time.sleep(0.05)
+        processed = 0
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                executor.submit(check_excel_file_advanced, file, self.options): file
+                for file in files
+            }
+
+            for future in as_completed(futures):
+                if not self._is_running:
+                    break
+
+                file_path = futures[future]
+                relative_path = os.path.relpath(file_path, self.folder_path)
+                status, error_msg = future.result()
+
+                self.file_result.emit(
+                    self.folder_path, relative_path, status, error_msg
+                )
+
+                processed += 1
+                self.progress_changed.emit(int((processed / total) * 100))
 
         self.finished_signal.emit()
+
+    def stop(self):
+        self._is_running = False
 
 
 # ----------------- PyQt Main Window -----------------
@@ -199,47 +207,55 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Excel Checker")
-        self.setGeometry(100, 100, 800, 500)
+        self.setGeometry(100, 100, 1000, 600)
+        self.worker = None
 
+        self.init_ui()
+
+    def init_ui(self):
         main_layout = QVBoxLayout()
-        input_layout = QHBoxLayout()
-        button_layout = QHBoxLayout()
 
-        # Folder input bar
+        # Input section
+        input_layout = QHBoxLayout()
         self.folder_input = QLineEdit()
         self.folder_input.setPlaceholderText("Paste or type folder path here...")
         self.folder_input.textChanged.connect(self.on_folder_input_change)
 
-        # Select button
         self.btn_select = QPushButton("Browse")
         self.btn_select.clicked.connect(self.select_folder)
 
         input_layout.addWidget(self.folder_input)
         input_layout.addWidget(self.btn_select)
 
-        # Optional checkbox
+        # Options section
+        option_layout = QVBoxLayout()
         self.sheet_check_cb = QCheckBox("Check contains invalid sheets")
         self.filename_check_cb = QCheckBox("Check filename prefix")
         self.confirm_cell_cb = QCheckBox("Check 表紙 Confirm")
         self.testcase_status_cb = QCheckBox("Check テスト項目 test status")
 
+        # Set defaults
         self.sheet_check_cb.setChecked(True)
         self.filename_check_cb.setChecked(True)
         self.confirm_cell_cb.setChecked(True)
         self.testcase_status_cb.setChecked(True)
 
-        option_layout = QVBoxLayout()
         option_layout.addWidget(self.sheet_check_cb)
         option_layout.addWidget(self.filename_check_cb)
         option_layout.addWidget(self.confirm_cell_cb)
         option_layout.addWidget(self.testcase_status_cb)
 
-        # Execute button
+        # Button section
+        button_layout = QHBoxLayout()
         self.btn_execute = QPushButton("Execute")
         self.btn_execute.setEnabled(False)
         self.btn_execute.clicked.connect(self.start_execution)
+        self.btn_stop = QPushButton("Stop")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self.stop_execution)
 
         button_layout.addWidget(self.btn_execute)
+        button_layout.addWidget(self.btn_stop)
 
         # Table widget
         self.table = QTableWidget()
@@ -248,37 +264,38 @@ class MainWindow(QWidget):
             ["Prefix Path", "Relative Path", "Status", "Errors"]
         )
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSelectionBehavior(self.table.SelectRows)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.itemDoubleClicked.connect(self.open_selected_file)
+        self.table.setSortingEnabled(True)
 
         # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setAlignment(Qt.AlignCenter)
         self.progress_bar.setValue(0)
 
-        # Layout add
+        # Status label
+        self.status_label = QLabel("Ready")
+
+        # Assemble main layout
         main_layout.addLayout(input_layout)
         main_layout.addLayout(button_layout)
         main_layout.addLayout(option_layout)
         main_layout.addWidget(self.table)
         main_layout.addWidget(self.progress_bar)
-        self.setLayout(main_layout)
+        main_layout.addWidget(self.status_label)
 
-        self.worker = None
+        self.setLayout(main_layout)
 
     def on_folder_input_change(self, text):
         self.btn_execute.setEnabled(os.path.isdir(text.strip()))
 
     def select_folder(self):
         current_path = self.folder_input.text().strip()
+        start_dir = (
+            current_path if os.path.isdir(current_path) else os.path.expanduser("~")
+        )
 
-        if os.path.isdir(current_path):
-            start_dir = current_path
-        else:
-            start_dir = os.path.expanduser("~")
-
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder", start_dir)
-        if folder:
+        if folder := QFileDialog.getExistingDirectory(self, "Select Folder", start_dir):
             self.folder_input.setText(folder)
 
     def start_execution(self):
@@ -292,56 +309,80 @@ class MainWindow(QWidget):
         self.progress_bar.setValue(0)
         self.table.setRowCount(0)
         self.btn_execute.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.status_label.setText("Processing...")
+
         options = {
             "check_invalid_sheets": self.sheet_check_cb.isChecked(),
             "check_filename_prefix": self.filename_check_cb.isChecked(),
             "check_confirm_cell": self.confirm_cell_cb.isChecked(),
             "check_testcase_status": self.testcase_status_cb.isChecked(),
         }
+
+        load_config()
         self.worker = ExcelCheckWorker(folder_path, options)
         self.worker.progress_changed.connect(self.progress_bar.setValue)
         self.worker.file_result.connect(self.add_table_row)
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.start()
 
+    def stop_execution(self):
+        if self.worker:
+            self.worker.stop()
+            self.worker.wait()
+            self.status_label.setText("Process stopped by user")
+            self.btn_execute.setEnabled(True)
+            self.btn_stop.setEnabled(False)
+
     def add_table_row(self, prefix_path, path, status, error):
-        self.table.setSortingEnabled(False)
         row = self.table.rowCount()
         self.table.insertRow(row)
-        correct_path = path.replace("\\", "/")
-        prefix_item = QTableWidgetItem(prefix_path)
-        status_item = QTableWidgetItem(status)
-        path_item = QTableWidgetItem(correct_path)
-        error_item = QTableWidgetItem(error)
+
+        items = [
+            QTableWidgetItem(prefix_path),
+            QTableWidgetItem(path.replace("\\", "/")),
+            QTableWidgetItem(status),
+            QTableWidgetItem(error),
+        ]
+
         if status == "OK":
-            status_item.setForeground(QColor("green"))
+            items[2].setForeground(QColor("green"))
         elif status == "ERROR":
-            status_item.setForeground(QColor("red"))
-        self.table.setItem(row, 0, prefix_item)
-        self.table.setItem(row, 1, path_item)
-        self.table.setItem(row, 2, status_item)
-        self.table.setItem(row, 3, error_item)
-        self.table.setSortingEnabled(True)
+            items[2].setForeground(QColor("red"))
+
+        for col, item in enumerate(items):
+            self.table.setItem(row, col, item)
 
     def open_selected_file(self, item):
         row = item.row()
         path = os.path.join(self.folder_input.text(), self.table.item(row, 1).text())
+
         if os.path.exists(path):
-            if os.name == "nt":
-                os.startfile(path)
-            elif sys.platform == "darwin":
-                subprocess.call(["open", path])
-            else:
-                subprocess.call(["xdg-open", path])
+            try:
+                if os.name == "nt":
+                    os.startfile(path)
+                elif sys.platform == "darwin":
+                    subprocess.call(["open", path])
+                else:
+                    subprocess.call(["xdg-open", path])
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not open file: {str(e)}")
         else:
             QMessageBox.warning(self, "File Not Found", f"File not found: {path}")
 
     def on_finished(self):
         self.btn_execute.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self.status_label.setText("Process completed")
         QMessageBox.information(self, "Done", "Check completed.")
 
+    def closeEvent(self, event):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait()
+        event.accept()
 
-# ----------------- Entry Point -----------------
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
