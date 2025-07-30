@@ -10,76 +10,95 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
 import subprocess
 
-# ----------------- Excel File Validation Logic -----------------
+# --- Helper Functions ---
+def check_required_sheets(wb, required_sheets={'表紙', 'テスト項目'}):
+    """Check if all required sheets exist in the workbook."""
+    missing_sheets = required_sheets - set(wb.sheetnames)
+    if missing_sheets:
+        return f"Missing sheet(s): {', '.join(missing_sheets)}"
+    return None
+
+
+def check_confirm_by(wb):
+    """Check if Confirm by (P24 in 表紙) is not empty."""
+    if '表紙' not in wb.sheetnames:
+        return None
+    ws = wb['表紙']
+    p24_value = ws['P24'].value
+    if p24_value is None or str(p24_value).strip() == "":
+        return "Missing Confirm by"
+    return None
+
+
+def find_column_indexes(ws, headers=("確認", "参考"), header_row=3):
+    """Find the column indexes of the headers in the given row."""
+    col_indexes = {}
+    for cell in ws[header_row]:
+        if cell.value in headers:
+            col_indexes[cell.value] = cell.column
+    return col_indexes
+
+
+def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
+    """Check rows in テスト項目 sheet for rows where status != 'OK'."""
+    if 'テスト項目' not in wb.sheetnames:
+        return None
+    ws = wb['テスト項目']
+    col_indexes = find_column_indexes(ws)
+    status_col = col_indexes.get("確認")
+
+    if not status_col:
+        return "Column '確認' not found"
+
+    error_rows = []
+    consecutive_empty = 0
+
+    for row in range(5, max_rows + 1):
+        if consecutive_empty >= empty_limit:
+            break
+        b_cell = ws.cell(row=row, column=2)
+        b_value = b_cell.value
+        if b_value and str(b_value).strip():
+            consecutive_empty = 0
+            status_cell = ws.cell(row=row, column=status_col)
+            status_value = status_cell.value
+            if status_value is None or str(status_value).strip().upper() != "OK":
+                error_rows.append(f"Row {row} (B{row}='{str(b_value).strip()}')")
+        else:
+            consecutive_empty += 1
+
+    if error_rows:
+        return f"{len(error_rows)} rows status != 'OK': " + "; ".join(error_rows)
+    return None
+
+
+# --- Main Function ---
 def check_excel_file_advanced(file_path):
+    """Main function to check Excel file based on multiple criteria."""
     try:
         wb = load_workbook(file_path, data_only=True, read_only=True)
-        filename = os.path.basename(file_path)
-        results = []
+        error_messages = []
 
-        required_sheets = {'表紙', 'テスト項目'}
-        missing_sheets = required_sheets - set(wb.sheetnames)
-        if missing_sheets:
-            return "ERROR", "Missing sheet(s): " + ", ".join(missing_sheets)
+        # Run each check
+        err = check_required_sheets(wb)
+        if err: error_messages.append(err)
 
-        ws = wb['表紙']
-        p24_value = ws['P24'].value
-        if p24_value is None or str(p24_value).strip() == "":
-            wb.close()
-            return "ERROR", "Missing Confirm by"
+        err = check_confirm_by(wb)
+        if err: error_messages.append(err)
 
-        ws2 = wb['テスト項目']
-        error_rows = []
-        checked_rows = []
-        status_col = 0
-        pref_col = 0
+        err = check_status_in_test_items(wb)
+        if err: error_messages.append(err)
 
-        for cell in ws2[3]:
-            if cell.value == "確認":
-                status_col = cell.column
-            if cell.value == "参考":
-                pref_col = cell.column
-
-        max_rows_to_check = 1000
-        consecutive_empty_limit = 10
-        consecutive_empty = 0
-
-        for row in range(5, max_rows_to_check + 1):
-            if consecutive_empty >= consecutive_empty_limit:
-                break
-            b_cell = ws2.cell(row=row, column=2)
-            b_value = b_cell.value
-            if b_value is not None and str(b_value).strip():
-                consecutive_empty = 0
-                checked_rows.append(row)
-                
-                status_cell = ws2.cell(row=row, column=status_col)
-                status_value = status_cell.value
-                if status_value is None or str(status_value).strip().upper() != "OK":
-                    error_rows.append(f"Row {row} (B{row}='{str(b_value).strip()}')")
-                
-                # pref_cell = ws2.cell(row=row, column=pref_col)
-                # if pref_cell.hyperlink:
-                    # link = pref_cell.hyperlink.target
-                    # print(link, pref_col, pref_cell.value)
-                    # if link.startswith("file:///"):
-                    #     link_ref = link[8:]
-                    #     if "!" in link_ref:
-                    #         target_sheet = link_ref.split("!")[0].strip("'")
-                    #         if target_sheet not in wb.sheetnames or target_sheet != pref_cell.value:
-                    #             error_rows.append(f"Broken link in row {row}: {link_ref} not found in workbook or does not match cell value")
-                    #     else:
-                    #         error_rows.append(f"Broken link in row {row}: {link_ref} does not point to a valid sheet")
-            else:
-                consecutive_empty += 1
-
-        if error_rows:
-            wb.close()
-            return "ERROR", f"{len(error_rows)} rows status != 'OK'"
         wb.close()
+
+        # Return aggregated results
+        if error_messages:
+            return "ERROR", ", ".join(error_messages)
         return "OK", ""
+
     except Exception as e:
         return "ERROR", str(e)
+
 
 def find_excel_files_recursive(folder_path):
     excel_files = []
@@ -174,7 +193,14 @@ class MainWindow(QWidget):
         self.btn_execute.setEnabled(os.path.isdir(text.strip()))
 
     def select_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder")
+        current_path = self.folder_input.text().strip()
+        
+        if os.path.isdir(current_path):
+            start_dir = current_path
+        else:
+            start_dir = os.path.expanduser("~")
+
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder", start_dir)
         if folder:
             self.folder_input.setText(folder)
 
@@ -225,7 +251,7 @@ class MainWindow(QWidget):
 
     def on_finished(self):
         self.btn_execute.setEnabled(True)
-        QMessageBox.information(self, "Done", "Validation completed.")
+        QMessageBox.information(self, "Done", "Check completed.")
 
 # ----------------- Entry Point -----------------
 if __name__ == "__main__":
