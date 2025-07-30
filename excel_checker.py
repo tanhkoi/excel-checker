@@ -121,7 +121,7 @@ class ExcelCheckWorker(QThread):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Excel Validator")
+        self.setWindowTitle("Excel Checker")
         self.setGeometry(100, 100, 800, 500)
 
         main_layout = QVBoxLayout()
