@@ -22,6 +22,37 @@ import subprocess
 
 
 # --- Helper Functions ---
+def check_valid_filename(file_path):
+    category_prefix_map = {
+        "BO-API": "共通書店システムのオンプレミス化対応_単体テスト報告書_BO",
+        "BO-WEB": "共通書店システムのオンプレミス化対応_単体テスト報告書_BO",
+        "QUEUE-API": "共通書店システムのオンプレミス化対応_単体テスト報告書_BO",
+        "EXT-API": "共通書店システムのオンプレミス化対応_単体テスト報告書_EXT",
+        "DB-Functions": "共通書店システムのオンプレミス化対応_単体テスト報告書_DB",
+        "DB-Packages": "共通書店システムのオンプレミス化対応_単体テスト報告書_DB",
+        "DB-Sequences": "共通書店システムのオンプレミス化対応_単体テスト報告書_DB",
+        "DB-Tables": "共通書店システムのオンプレミス化対応_単体テスト報告書_DB",
+    }
+
+    filename = os.path.basename(file_path)
+    parts = os.path.normpath(file_path).split(os.sep)
+
+    for folder_name, expected_prefix in category_prefix_map.items():
+        if folder_name in parts:
+            if not filename.startswith(expected_prefix):
+                return f"Invalid filename for '{folder_name}'"
+            break  # Stop checking after first match
+
+    return None
+
+
+def check_invalid_sheet(wb, invalid_sheets={"HOW TO TEST"}):
+    for sheet in invalid_sheets:
+        if sheet in wb.sheetnames:
+            return f"Contains invalid sheet: {sheet}"
+    return None
+
+
 def check_required_sheets(wb, required_sheets={"表紙", "テスト項目"}):
     for sheet in required_sheets:
         if sheet not in wb.sheetnames:
@@ -30,6 +61,8 @@ def check_required_sheets(wb, required_sheets={"表紙", "テスト項目"}):
 
 
 def check_confirm_by(wb):
+    if "表紙" not in wb.sheetnames:
+        return None
     ws = wb["表紙"]
     p24_value = ws["P24"].value
     if p24_value is None or str(p24_value).strip() == "":
@@ -46,6 +79,8 @@ def find_column_indexes(ws, headers=("確認", "参考"), header_row=3):
 
 
 def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
+    if "テスト項目" not in wb.sheetnames:
+        return None
     ws = wb["テスト項目"]
     col_indexes = find_column_indexes(ws)
     status_col = col_indexes.get("確認")
@@ -71,7 +106,7 @@ def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
             consecutive_empty += 1
 
     if error_rows:
-        return f"{len(error_rows)} row(s) status != 'OK': " + "; ".join(error_rows)
+        return f"{len(error_rows)} TC(s) != 'OK': " + "; ".join(error_rows)
     return None
 
 
@@ -82,6 +117,10 @@ def check_excel_file_advanced(file_path):
         error_messages = []
 
         # Run each check
+        err = check_valid_filename(file_path)
+        if err:
+            error_messages.append(err)
+
         err = check_required_sheets(wb)
         if err:
             error_messages.append(err)
@@ -91,6 +130,10 @@ def check_excel_file_advanced(file_path):
             error_messages.append(err)
 
         err = check_status_in_test_items(wb)
+        if err:
+            error_messages.append(err)
+
+        err = check_invalid_sheet(wb)
         if err:
             error_messages.append(err)
 
