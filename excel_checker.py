@@ -171,9 +171,10 @@ class ExcelCheckWorker(QThread):
     )  # prefix_path, relative_path, status, error
     finished_signal = pyqtSignal()
 
-    def __init__(self, folder_path):
+    def __init__(self, folder_path, options):
         super().__init__()
         self.folder_path = folder_path
+        self.options = options
 
     def run(self):
         files = find_excel_files_recursive(self.folder_path)
@@ -183,16 +184,9 @@ class ExcelCheckWorker(QThread):
             self.finished_signal.emit()
             return
 
-        options = {
-            "check_invalid_sheets": self.sheet_check_cb.isChecked(),
-            "check_filename_prefix": self.filename_check_cb.isChecked(),
-            "check_confirm_cell": self.confirm_cell_cb.isChecked(),
-            "check_testcase_status": self.testcase_status_cb.isChecked(),
-        }
-
         for i, file_path in enumerate(files, 1):
             relative_path = os.path.relpath(file_path, self.folder_path)
-            status, error_msg = check_excel_file_advanced(file_path, options)
+            status, error_msg = check_excel_file_advanced(file_path, self.options)
             self.file_result.emit(self.folder_path, relative_path, status, error_msg)
             self.progress_changed.emit(int((i / total) * 100))
             time.sleep(0.05)
@@ -298,8 +292,13 @@ class MainWindow(QWidget):
         self.progress_bar.setValue(0)
         self.table.setRowCount(0)
         self.btn_execute.setEnabled(False)
-
-        self.worker = ExcelCheckWorker(folder_path)
+        options = {
+            "check_invalid_sheets": self.sheet_check_cb.isChecked(),
+            "check_filename_prefix": self.filename_check_cb.isChecked(),
+            "check_confirm_cell": self.confirm_cell_cb.isChecked(),
+            "check_testcase_status": self.testcase_status_cb.isChecked(),
+        }
+        self.worker = ExcelCheckWorker(folder_path, options)
         self.worker.progress_changed.connect(self.progress_bar.setValue)
         self.worker.file_result.connect(self.add_table_row)
         self.worker.finished_signal.connect(self.on_finished)
