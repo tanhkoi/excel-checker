@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QTableWidget,
     QTableWidgetItem,
+    QCheckBox,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
@@ -111,31 +112,35 @@ def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
 
 
 # --- Main Function ---
-def check_excel_file_advanced(file_path):
+def check_excel_file_advanced(file_path, options):
     try:
         wb = load_workbook(file_path, data_only=True, read_only=True)
         error_messages = []
 
         # Run each check
-        err = check_valid_filename(file_path)
-        if err:
-            error_messages.append(err)
+        if options.get("check_filename_prefix", True):
+            err = check_valid_filename(file_path)
+            if err:
+                error_messages.append(err)
 
         err = check_required_sheets(wb)
         if err:
             error_messages.append(err)
 
-        err = check_confirm_by(wb)
-        if err:
-            error_messages.append(err)
+        if options.get("check_confirm_cell", True):
+            err = check_confirm_by(wb)
+            if err:
+                error_messages.append(err)
 
-        err = check_status_in_test_items(wb)
-        if err:
-            error_messages.append(err)
+        if options.get("check_testcase_status", True):
+            err = check_status_in_test_items(wb)
+            if err:
+                error_messages.append(err)
 
-        err = check_invalid_sheet(wb)
-        if err:
-            error_messages.append(err)
+        if options.get("check_invalid_sheets", True):
+            err = check_invalid_sheet(wb)
+            if err:
+                error_messages.append(err)
 
         wb.close()
 
@@ -178,9 +183,16 @@ class ExcelCheckWorker(QThread):
             self.finished_signal.emit()
             return
 
+        options = {
+            "check_invalid_sheets": self.sheet_check_cb.isChecked(),
+            "check_filename_prefix": self.filename_check_cb.isChecked(),
+            "check_confirm_cell": self.confirm_cell_cb.isChecked(),
+            "check_testcase_status": self.testcase_status_cb.isChecked(),
+        }
+
         for i, file_path in enumerate(files, 1):
             relative_path = os.path.relpath(file_path, self.folder_path)
-            status, error_msg = check_excel_file_advanced(file_path)
+            status, error_msg = check_excel_file_advanced(file_path, options)
             self.file_result.emit(self.folder_path, relative_path, status, error_msg)
             self.progress_changed.emit(int((i / total) * 100))
             time.sleep(0.05)
@@ -211,6 +223,23 @@ class MainWindow(QWidget):
         input_layout.addWidget(self.folder_input)
         input_layout.addWidget(self.btn_select)
 
+        # Optional checkbox
+        self.sheet_check_cb = QCheckBox("Check contains invalid sheets")
+        self.filename_check_cb = QCheckBox("Check filename prefix")
+        self.confirm_cell_cb = QCheckBox("Check 表紙 Confirm")
+        self.testcase_status_cb = QCheckBox("Check テスト項目 test status")
+
+        self.sheet_check_cb.setChecked(True)
+        self.filename_check_cb.setChecked(True)
+        self.confirm_cell_cb.setChecked(True)
+        self.testcase_status_cb.setChecked(True)
+
+        option_layout = QVBoxLayout()
+        option_layout.addWidget(self.sheet_check_cb)
+        option_layout.addWidget(self.filename_check_cb)
+        option_layout.addWidget(self.confirm_cell_cb)
+        option_layout.addWidget(self.testcase_status_cb)
+
         # Execute button
         self.btn_execute = QPushButton("Execute")
         self.btn_execute.setEnabled(False)
@@ -236,6 +265,7 @@ class MainWindow(QWidget):
         # Layout add
         main_layout.addLayout(input_layout)
         main_layout.addLayout(button_layout)
+        main_layout.addLayout(option_layout)
         main_layout.addWidget(self.table)
         main_layout.addWidget(self.progress_bar)
         self.setLayout(main_layout)
