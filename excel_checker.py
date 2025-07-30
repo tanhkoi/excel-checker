@@ -154,6 +154,7 @@ class MainWindow(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(self.table.SelectRows)
         self.table.itemDoubleClicked.connect(self.open_selected_file)
+        # self.table.setSortingEnabled(True)
 
         # Progress bar
         self.progress_bar = QProgressBar()
@@ -194,6 +195,7 @@ class MainWindow(QWidget):
         self.worker.start()
 
     def add_table_row(self, status, path, error):
+        self.table.setSortingEnabled(False)
         row = self.table.rowCount()
         self.table.insertRow(row)
         status_item = QTableWidgetItem(status)
@@ -206,6 +208,7 @@ class MainWindow(QWidget):
         self.table.setItem(row, 0, status_item)
         self.table.setItem(row, 1, path_item)
         self.table.setItem(row, 2, error_item)
+        self.table.setSortingEnabled(True)
 
     def open_selected_file(self, item):
         row = item.row()
