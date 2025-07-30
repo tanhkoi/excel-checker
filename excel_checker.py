@@ -52,15 +52,29 @@ def check_invalid_text(wb):
     return None
 
 
+def column_letter(col_idx):
+    letters = []
+    while col_idx > 0:
+        col_idx, remainder = divmod(col_idx - 1, 26)
+        letters.append(chr(65 + remainder))
+    return "".join(reversed(letters))
+
+
 def check_contains_vietnamese_characters(wb):
+    vietnamese_chars = set(INVALID_CHARS)
     for sheet in wb.sheetnames:
         ws = wb[sheet]
-        for row in ws.iter_rows(values_only=True):
-            for cell in row:
+        for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            for col_idx, cell in enumerate(row, start=1):
                 if isinstance(cell, str) and any(
-                    char in cell for char in INVALID_CHARS
+                    char in vietnamese_chars for char in cell
                 ):
-                    return f"Contains vietnamese characters in sheet '{sheet}'"
+                    col_letter = column_letter(col_idx)
+                    cell_preview = cell[:50] + "..." if len(cell) > 50 else cell
+                    return (
+                        f"Contains Vietnamese characters at {sheet}!{col_letter}{row_idx} "
+                        f"(value: '{cell_preview}')"
+                    )
     return None
 
 
@@ -280,7 +294,7 @@ class MainWindow(QWidget):
         self.filename_check_cb.setChecked(True)
         self.sheet_check_cb.setChecked(True)
         self.check_contains_vietnamese_characters_cb.setChecked(False)
-        self.check_invalid_text_cb.setChecked(True)
+        self.check_invalid_text_cb.setChecked(False)
 
         option_layout.addWidget(self.confirm_cell_cb)
         option_layout.addWidget(self.testcase_status_cb)
