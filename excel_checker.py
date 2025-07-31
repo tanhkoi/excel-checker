@@ -128,7 +128,9 @@ def check_confirm_by(wb):
     if "表紙" not in wb.sheetnames:
         return None
     ws = wb["表紙"]
-    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+    for row in ws.iter_rows(
+        min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column
+    ):
         for cell in row:
             if cell.value == "確認":
                 if ws.cell(row=cell.row + 1, column=cell.column).value is None:
