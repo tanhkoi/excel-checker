@@ -33,6 +33,13 @@ jobs:
         run: |
           echo "TAG_NAME=auto-main-$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
 
+      - name: Create Git tag in repo
+        run: |
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+          git tag ${{ env.TAG_NAME }}
+          git push origin ${{ env.TAG_NAME }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
