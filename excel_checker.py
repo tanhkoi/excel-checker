@@ -128,15 +128,24 @@ def check_confirm_by(wb):
     if "表紙" not in wb.sheetnames:
         return None
     ws = wb["表紙"]
-    return (
-        "Missing Confirm"
-        if ws["P24"].value is None or not str(ws["P24"].value).strip()
-        else None
-    )
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+        for cell in row:
+            if cell.value == "確認":
+                if ws.cell(row=cell.row + 1, column=cell.column).value is None:
+                    return "Missing Confirm"
+                else:
+                    return None
 
 
-def find_column_indexes(ws, headers=("確認", "参考"), header_row=3):
-    return {cell.value: cell.column for cell in ws[header_row] if cell.value in headers}
+def find_column_indexes(ws, headers=("確認", "参考"), header_rows=(3, 4)):
+    found = {}
+    for row in header_rows:
+        for cell in ws[row]:
+            if cell.value in headers and cell.value not in found:
+                found[cell.value] = cell.column
+        if len(found) == len(headers):
+            break
+    return found
 
 
 def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
