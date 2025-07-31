@@ -3,228 +3,568 @@ import os
 import time
 from openpyxl import load_workbook
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog,
-    QLabel, QHBoxLayout, QProgressBar, QMessageBox, QLineEdit, QTableWidget, QTableWidgetItem
+    QApplication,
+    QWidget,
+    QPushButton,
+    QVBoxLayout,
+    QFileDialog,
+    QLabel,
+    QHBoxLayout,
+    QProgressBar,
+    QMessageBox,
+    QLineEdit,
+    QTableWidget,
+    QTableWidgetItem,
+    QCheckBox,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
+from datetime import datetime
 
-# ----------------- Excel File Validation Logic -----------------
-def check_excel_file_advanced(file_path):
-    try:
-        wb = load_workbook(file_path, data_only=True, read_only=True)
-        filename = os.path.basename(file_path)
-        results = []
 
-        required_sheets = {'表紙', 'テスト項目'}
-        missing_sheets = required_sheets - set(wb.sheetnames)
-        if missing_sheets:
-            return "ERROR", "Missing sheet(s): " + ", ".join(missing_sheets)
+def load_config(config_path="config.json"):
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-        ws = wb['表紙']
-        p24_value = ws['P24'].value
-        if p24_value is None or str(p24_value).strip() == "":
-            wb.close()
-            return "ERROR", "Missing Confirm by"
 
-        ws2 = wb['テスト項目']
-        error_rows = []
-        checked_rows = []
-        status_col = 0
-        pref_col = 0
+CONFIG = load_config()
 
-        for cell in ws2[3]:
+# --- Constants ---
+CATEGORY_PREFIX_MAP = CONFIG["category_prefix_map"]
+INVALID_SHEETS = set(CONFIG["invalid_sheets"])
+REQUIRED_SHEETS = set(CONFIG["required_sheets"])
+EXCEL_EXTENSIONS = tuple(CONFIG["excel_extensions"])
+INVALID_CHARS = set(CONFIG["invalid_chars"])
+INVALID_TEXT = set(CONFIG["invalid_text"])
+
+
+# --- Helper Functions ---
+def check_invalid_text(wb):
+    for sheet in wb.sheetnames:
+        ws = wb[sheet]
+        for row in ws.iter_rows(values_only=True):
+            for cell in row:
+                if isinstance(cell, str) and any(text in cell for text in INVALID_TEXT):
+                    return f"Contains invalid text in sheet '{sheet}'"
+    return None
+
+
+# def column_letter(col_idx):
+#     letters = []
+#     while col_idx > 0:
+#         col_idx, remainder = divmod(col_idx - 1, 26)
+#         letters.append(chr(65 + remainder))
+#     return "".join(reversed(letters))
+
+
+# def check_contains_vietnamese_characters(wb):
+#     vietnamese_chars = set(INVALID_CHARS)
+#     for sheet in wb.sheetnames:
+#         ws = wb[sheet]
+#         for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+#             for col_idx, cell in enumerate(row, start=1):
+#                 if isinstance(cell, str) and any(
+#                     char in vietnamese_chars for char in cell
+#                 ):
+#                     col_letter = column_letter(col_idx)
+#                     cell_preview = cell[:50] + "..." if len(cell) > 50 else cell
+#                     return (
+#                         f"Contains Vietnamese characters at {sheet}!{col_letter}{row_idx} "
+#                         f"(value: '{cell_preview}')"
+#                     )
+#     return None
+
+
+def check_contains_vietnamese_characters(wb):
+    results = ""
+    for sheet in wb.sheetnames:
+        ws = wb[sheet]
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value and isinstance(cell.value, str):
+                    for char in INVALID_CHARS:
+                        if char in cell.value:
+                            print(ws.title, cell.value, cell.coordinate)
+                            results += (
+                                f"sheet: {ws.title}, "
+                                f"cell: {cell.coordinate}, "
+                                f"value: {cell.value}; "
+                            )
+                            break
+
+    return results
+
+
+def check_valid_filename(file_path):
+    filename = os.path.basename(file_path)
+    parts = os.path.normpath(file_path).split(os.sep)
+
+    for folder_name, expected_prefix in CATEGORY_PREFIX_MAP.items():
+        if folder_name in parts:
+            if not filename.startswith(expected_prefix):
+                return f"Invalid filename for '{folder_name}'"
+            break
+    return None
+
+
+def check_invalid_sheet(wb):
+    for sheet in INVALID_SHEETS:
+        if sheet in wb.sheetnames:
+            return f"Contains invalid sheet: {sheet}"
+    return None
+
+
+def check_required_sheets(wb):
+    for sheet in REQUIRED_SHEETS:
+        if sheet not in wb.sheetnames:
+            return f"Missing required sheet: {sheet}"
+    return None
+
+
+def check_confirm_by(wb):
+    if "表紙" not in wb.sheetnames:
+        return None
+    ws = wb["表紙"]
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+        for cell in row:
             if cell.value == "確認":
-                status_col = cell.column
-            if cell.value == "参考":
-                pref_col = cell.column
+                if ws.cell(row=cell.row + 1, column=cell.column).value is None:
+                    return "Missing Confirm"
+                else:
+                    return None
 
-        max_rows_to_check = 1000
-        consecutive_empty_limit = 10
-        consecutive_empty = 0
 
-        for row in range(5, max_rows_to_check + 1):
-            if consecutive_empty >= consecutive_empty_limit:
-                break
-            b_cell = ws2.cell(row=row, column=2)
-            b_value = b_cell.value
-            if b_value is not None and str(b_value).strip():
-                consecutive_empty = 0
-                checked_rows.append(row)
-                
-                status_cell = ws2.cell(row=row, column=status_col)
-                status_value = status_cell.value
-                if status_value is None or str(status_value).strip().upper() != "OK":
-                    error_rows.append(f"Row {row} (B{row}='{str(b_value).strip()}')")
-                
-                # pref_cell = ws2.cell(row=row, column=pref_col)
-                # if pref_cell.hyperlink:
-                    # link = pref_cell.hyperlink.target
-                    # print(link, pref_col, pref_cell.value)
-                    # if link.startswith("file:///"):
-                    #     link_ref = link[8:]
-                    #     if "!" in link_ref:
-                    #         target_sheet = link_ref.split("!")[0].strip("'")
-                    #         if target_sheet not in wb.sheetnames or target_sheet != pref_cell.value:
-                    #             error_rows.append(f"Broken link in row {row}: {link_ref} not found in workbook or does not match cell value")
-                    #     else:
-                    #         error_rows.append(f"Broken link in row {row}: {link_ref} does not point to a valid sheet")
-            else:
-                consecutive_empty += 1
+def find_column_indexes(ws, headers=("確認", "参考"), header_rows=(3, 4)):
+    found = {}
+    for row in header_rows:
+        for cell in ws[row]:
+            if cell.value in headers and cell.value not in found:
+                found[cell.value] = cell.column
+        if len(found) == len(headers):
+            break
+    return found
 
-        if error_rows:
-            wb.close()
-            return "ERROR", f"{len(error_rows)} rows status != 'OK'"
+
+def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
+    if "テスト項目" not in wb.sheetnames:
+        return None
+
+    ws = wb["テスト項目"]
+    col_indexes = find_column_indexes(ws)
+    if "確認" not in col_indexes:
+        return "Column '確認' not found"
+
+    status_col = col_indexes["確認"]
+    error_rows = []
+    consecutive_empty = 0
+
+    for row in range(5, max_rows + 1):
+        if consecutive_empty >= empty_limit:
+            break
+
+        b_cell = ws.cell(row=row, column=2)
+        if b_cell.value and str(b_cell.value).strip():
+            consecutive_empty = 0
+            status_value = ws.cell(row=row, column=status_col).value
+            if status_value is None or str(status_value).strip().upper() != "OK":
+                error_rows.append(str(b_cell.value).strip())
+        else:
+            consecutive_empty += 1
+
+    return (
+        f"{len(error_rows)} TC(s) != 'OK': " + "; ".join(error_rows)
+        if error_rows
+        else None
+    )
+
+
+# --- Main Function ---
+def check_excel_file_advanced(file_path, options):
+    try:
+        error_messages = []
+        wb = load_workbook(file_path, data_only=True, read_only=True)
+
+        if options.get("check_filename_prefix", True):
+            if err := check_valid_filename(file_path):
+                error_messages.append(err)
+
+        if err := check_required_sheets(wb):
+            error_messages.append(err)
+
+        if options.get("check_invalid_sheets", True):
+            if err := check_invalid_sheet(wb):
+                error_messages.append(err)
+
+        if options.get("check_confirm_cell", True):
+            if err := check_confirm_by(wb):
+                error_messages.append(err)
+
+        if options.get("check_testcase_status", True):
+            if err := check_status_in_test_items(wb):
+                error_messages.append(err)
+
+        if options.get("check_contains_vietnamese_characters", True):
+            if err := check_contains_vietnamese_characters(wb):
+                error_messages.append(err)
+
+        if options.get("check_invalid_text", True):
+            if err := check_invalid_text(wb):
+                error_messages.append(err)
+
         wb.close()
-        return "OK", ""
+        return ("ERROR", ", ".join(error_messages)) if error_messages else ("OK", "")
+
     except Exception as e:
         return "ERROR", str(e)
 
+
 def find_excel_files_recursive(folder_path):
     excel_files = []
-    excel_extensions = ('.xlsx', '.xlsm', '.xls')
     for root_dir, _, files in os.walk(folder_path):
         for file in files:
-            if file.lower().endswith(excel_extensions):
+            if file.lower().endswith(EXCEL_EXTENSIONS):
                 excel_files.append(os.path.join(root_dir, file))
     return excel_files
+
 
 # ----------------- Worker Thread -----------------
 class ExcelCheckWorker(QThread):
     progress_changed = pyqtSignal(int)
-    file_result = pyqtSignal(str, str, str)  # status, relative_path, error
+    file_result = pyqtSignal(
+        str, str, str, str
+    )  # prefix_path, relative_path, status, error
     finished_signal = pyqtSignal()
 
-    def __init__(self, folder_path):
+    def __init__(self, folder_path, options, max_workers=4):
         super().__init__()
         self.folder_path = folder_path
+        self.options = options
+        self.max_workers = max_workers
+        self._is_running = True
 
     def run(self):
         files = find_excel_files_recursive(self.folder_path)
         total = len(files)
         if not files:
-            self.file_result.emit("INFO", "", "No Excel files found.")
+            self.file_result.emit(self.folder_path, "", "INFO", "No Excel files found.")
             self.finished_signal.emit()
             return
 
-        for i, file_path in enumerate(files, 1):
-            relative_path = os.path.relpath(file_path, self.folder_path)
-            status, error_msg = check_excel_file_advanced(file_path)
-            self.file_result.emit(status, relative_path, error_msg)
-            self.progress_changed.emit(int((i / total) * 100))
-            time.sleep(0.05)
+        processed = 0
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                executor.submit(check_excel_file_advanced, file, self.options): file
+                for file in files
+            }
+
+            for future in as_completed(futures):
+                if not self._is_running:
+                    break
+
+                file_path = futures[future]
+                relative_path = os.path.relpath(file_path, self.folder_path)
+                status, error_msg = future.result()
+
+                self.file_result.emit(
+                    self.folder_path, relative_path, status, error_msg
+                )
+
+                processed += 1
+                self.progress_changed.emit(int((processed / total) * 100))
 
         self.finished_signal.emit()
+
+    def stop(self):
+        self._is_running = False
+
 
 # ----------------- PyQt Main Window -----------------
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Excel Checker")
-        self.setGeometry(100, 100, 800, 500)
+        self.setGeometry(100, 100, 1000, 600)
+        self.worker = None
 
+        self.init_ui()
+
+    def init_ui(self):
         main_layout = QVBoxLayout()
-        input_layout = QHBoxLayout()
-        button_layout = QHBoxLayout()
 
-        # Folder input bar
+        # Input section
+        input_layout = QHBoxLayout()
         self.folder_input = QLineEdit()
         self.folder_input.setPlaceholderText("Paste or type folder path here...")
         self.folder_input.textChanged.connect(self.on_folder_input_change)
 
-        # Select button
         self.btn_select = QPushButton("Browse")
         self.btn_select.clicked.connect(self.select_folder)
 
         input_layout.addWidget(self.folder_input)
         input_layout.addWidget(self.btn_select)
 
-        # Execute button
+        # Options section
+        option_layout = QVBoxLayout()
+        self.confirm_cell_cb = QCheckBox("1. Check confirm")
+        self.testcase_status_cb = QCheckBox("2. Check test case status")
+        self.filename_check_cb = QCheckBox("3. Check filename prefix")
+        self.sheet_check_cb = QCheckBox("4. Check contains invalid sheets")
+        self.check_contains_vietnamese_characters_cb = QCheckBox(
+            "5. Check contains Vietnamese characters for JP files"
+        )
+        self.check_invalid_text_cb = QCheckBox("6. Check contains invalid text")
+
+        # Set defaults
+        self.confirm_cell_cb.setChecked(True)
+        self.testcase_status_cb.setChecked(True)
+        self.filename_check_cb.setChecked(True)
+        self.sheet_check_cb.setChecked(True)
+        self.check_contains_vietnamese_characters_cb.setChecked(False)
+        self.check_invalid_text_cb.setChecked(False)
+
+        option_layout.addWidget(self.confirm_cell_cb)
+        option_layout.addWidget(self.testcase_status_cb)
+        option_layout.addWidget(self.filename_check_cb)
+        option_layout.addWidget(self.sheet_check_cb)
+        option_layout.addWidget(self.check_contains_vietnamese_characters_cb)
+        option_layout.addWidget(self.check_invalid_text_cb)
+
+        # Button section
+        button_layout = QHBoxLayout()
         self.btn_execute = QPushButton("Execute")
         self.btn_execute.setEnabled(False)
         self.btn_execute.clicked.connect(self.start_execution)
+        self.btn_stop = QPushButton("Stop")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self.stop_execution)
+        self.btn_export = QPushButton("Export Results")
+        self.btn_export.setEnabled(False)
+        self.btn_export.clicked.connect(self.export_results)
+        button_layout.addWidget(self.btn_export)
 
         button_layout.addWidget(self.btn_execute)
+        button_layout.addWidget(self.btn_stop)
 
         # Table widget
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Status", "Path file", "Errors"])
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(
+            ["Prefix Path", "Relative Path", "Status", "Errors"]
+        )
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSelectionBehavior(self.table.SelectRows)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.itemDoubleClicked.connect(self.open_selected_file)
+        self.table.setSortingEnabled(True)
 
         # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setAlignment(Qt.AlignCenter)
         self.progress_bar.setValue(0)
 
-        # Layout add
+        # Status label
+        config_info_label = QLabel(
+            "Note: Case 3, 4, 5, and 6 are configurable.\n"
+            "You can change their rules in the 'config.json' file located in the tool's directory."
+        )
+        config_info_label.setStyleSheet("color: gray; font-size: 11px;")
+        config_info_label.setWordWrap(True)
+
+        self.status_label = QLabel("Ready")
+
+        # Assemble main layout
         main_layout.addLayout(input_layout)
         main_layout.addLayout(button_layout)
+        main_layout.addWidget(config_info_label)
+        main_layout.addLayout(option_layout)
         main_layout.addWidget(self.table)
         main_layout.addWidget(self.progress_bar)
-        self.setLayout(main_layout)
+        main_layout.addWidget(self.status_label)
 
-        self.worker = None
+        self.setLayout(main_layout)
 
     def on_folder_input_change(self, text):
         self.btn_execute.setEnabled(os.path.isdir(text.strip()))
 
     def select_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder")
-        if folder:
+        current_path = self.folder_input.text().strip()
+        start_dir = (
+            current_path if os.path.isdir(current_path) else os.path.expanduser("~")
+        )
+
+        if folder := QFileDialog.getExistingDirectory(self, "Select Folder", start_dir):
             self.folder_input.setText(folder)
 
     def start_execution(self):
+        self.btn_export.setEnabled(False)
         folder_path = self.folder_input.text().strip()
         if not os.path.isdir(folder_path):
-            QMessageBox.warning(self, "Invalid Folder", "Please provide a valid folder path.")
+            QMessageBox.warning(
+                self, "Invalid Folder", "Please provide a valid folder path."
+            )
             return
 
         self.progress_bar.setValue(0)
         self.table.setRowCount(0)
         self.btn_execute.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.status_label.setText("Processing...")
 
-        self.worker = ExcelCheckWorker(folder_path)
+        options = {
+            "check_invalid_sheets": self.sheet_check_cb.isChecked(),
+            "check_filename_prefix": self.filename_check_cb.isChecked(),
+            "check_confirm_cell": self.confirm_cell_cb.isChecked(),
+            "check_testcase_status": self.testcase_status_cb.isChecked(),
+            "check_contains_vietnamese_characters": self.check_contains_vietnamese_characters_cb.isChecked(),
+            "check_invalid_text": self.check_invalid_text_cb.isChecked(),
+        }
+
+        load_config()
+        self.worker = ExcelCheckWorker(folder_path, options)
         self.worker.progress_changed.connect(self.progress_bar.setValue)
         self.worker.file_result.connect(self.add_table_row)
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.start()
 
-    def add_table_row(self, status, path, error):
+    def stop_execution(self):
+        if self.worker:
+            self.worker.stop()
+            self.worker.wait()
+            self.status_label.setText("Process stopped by user")
+            self.btn_execute.setEnabled(True)
+            self.btn_stop.setEnabled(False)
+
+    def add_table_row(self, prefix_path, path, status, error):
         row = self.table.rowCount()
         self.table.insertRow(row)
-        status_item = QTableWidgetItem(status)
-        path_item = QTableWidgetItem(path)
-        error_item = QTableWidgetItem(error)
+
+        items = [
+            QTableWidgetItem(prefix_path),
+            QTableWidgetItem(path.replace("\\", "/")),
+            QTableWidgetItem(status),
+            QTableWidgetItem(error),
+        ]
+
         if status == "OK":
-            status_item.setForeground(QColor("green"))
+            items[2].setForeground(QColor("green"))
         elif status == "ERROR":
-            status_item.setForeground(QColor("red"))
-        self.table.setItem(row, 0, status_item)
-        self.table.setItem(row, 1, path_item)
-        self.table.setItem(row, 2, error_item)
+            items[2].setForeground(QColor("red"))
+
+        for col, item in enumerate(items):
+            self.table.setItem(row, col, item)
+
+        if row == 0:
+            self.btn_export.setEnabled(True)
 
     def open_selected_file(self, item):
         row = item.row()
         path = os.path.join(self.folder_input.text(), self.table.item(row, 1).text())
+
         if os.path.exists(path):
-            if os.name == 'nt':
-                os.startfile(path)
-            elif sys.platform == 'darwin':
-                subprocess.call(['open', path])
-            else:
-                subprocess.call(['xdg-open', path])
+            try:
+                modifiers = QApplication.keyboardModifiers()
+                if modifiers == Qt.ControlModifier:
+                    folder_path = os.path.dirname(path)
+                    if os.name == "nt":
+                        os.startfile(folder_path)
+                    elif sys.platform == "darwin":
+                        subprocess.call(["open", folder_path])
+                    else:
+                        subprocess.call(["xdg-open", folder_path])
+                else:
+                    # Open the file
+                    if os.name == "nt":
+                        os.startfile(path)
+                    elif sys.platform == "darwin":
+                        subprocess.call(["open", path])
+                    else:
+                        subprocess.call(["xdg-open", path])
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not open: {str(e)}")
         else:
             QMessageBox.warning(self, "File Not Found", f"File not found: {path}")
 
     def on_finished(self):
         self.btn_execute.setEnabled(True)
-        QMessageBox.information(self, "Done", "Validation completed.")
+        self.btn_stop.setEnabled(False)
+        self.status_label.setText("Process completed")
+        QMessageBox.information(self, "Done", "Check completed.")
 
-# ----------------- Entry Point -----------------
+    def closeEvent(self, event):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait()
+        event.accept()
+
+    def export_results(self):
+        if self.table.rowCount() == 0:
+            QMessageBox.warning(self, "No Data", "There are no results to export.")
+            return
+
+        default_name = (
+            f"Excel_Check_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        # Get save file path
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Results", default_name, "Excel Files (*.xlsx);;All Files (*)"
+        )
+
+        if not file_path:
+            return  # User cancelled
+
+        # Ensure .xlsx extension
+        if not file_path.lower().endswith(".xlsx"):
+            file_path += ".xlsx"
+
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Color, Alignment
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Check Results"
+
+            # Write headers
+            headers = ["Prefix Path", "Relative Path", "Status", "Errors"]
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal="center")
+
+            # Write data
+            for row in range(self.table.rowCount()):
+                for col in range(self.table.columnCount()):
+                    item = self.table.item(row, col)
+                    ws.cell(
+                        row=row + 2, column=col + 1, value=item.text() if item else ""
+                    )
+
+            # Auto-size columns
+            for column in ws.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = (max_length + 2) * 1.2
+                ws.column_dimensions[column_letter].width = adjusted_width
+
+            wb.save(file_path)
+            QMessageBox.information(
+                self, "Success", f"Results exported to:\n{file_path}"
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Export Error", f"Failed to export results:\n{str(e)}"
+            )
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
