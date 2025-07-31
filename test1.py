@@ -1,7 +1,7 @@
 import sys
 import os
 import time
-from openpyxl import load_workbook
+import pandas as pd
 from PyQt5.QtWidgets import (
     QApplication,
     QWidget,
@@ -23,13 +23,6 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from datetime import datetime
-from pathlib import Path
-import logging
-
-
-# Configure logging for debugging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 def load_config(config_path="config.json"):
@@ -41,90 +34,57 @@ CONFIG = load_config()
 
 # --- Constants ---
 CATEGORY_PREFIX_MAP = CONFIG["category_prefix_map"]
-INVALID_SHEETS = set(CONFIG["invalid_sheets"])  # Use set for O(1) lookup
-REQUIRED_SHEETS = set(CONFIG["required_sheets"])  # Use set for O(1) lookup
+INVALID_SHEETS = CONFIG["invalid_sheets"]
+REQUIRED_SHEETS = CONFIG["required_sheets"]
 EXCEL_EXTENSIONS = tuple(CONFIG["excel_extensions"])
-INVALID_CHARS = set(CONFIG["invalid_chars"])  # Use set for faster lookup
-INVALID_TEXT = tuple(CONFIG["invalid_text"])  # Keep as tuple for 'in' check
+INVALID_CHARS = CONFIG["invalid_chars"]
+INVALID_TEXT = CONFIG["invalid_text"]
 
 
-# --- Optimized Helper Functions ---
+# --- Helper Functions ---
 def check_invalid_text(wb):
-    """Check for invalid text patterns - early exit on first match"""
-    for sheet_name in wb.sheetnames:
-        try:
-            ws = wb[sheet_name]
-            # Use row iterator for better memory efficiency
-            for row in ws.iter_rows(
-                values_only=True#, max_row=10000
-            ):  # Limit rows for performance
-                for cell in row:
-                    if isinstance(cell, str) and any(
-                        text in cell for text in INVALID_TEXT
-                    ):
-                        return f"Contains invalid text in sheet '{sheet_name}'"
-        except Exception as e:
-            logger.warning(f"Error checking invalid text in sheet {sheet_name}: {e}")
-            continue
+    for sheet in wb.sheet_names:
+        df = wb.parse(sheet)
+        for col in df.columns:
+            if df[col].dtype == object:  # Check only string columns
+                for cell in df[col]:
+                    if isinstance(cell, str) and any(text in cell for text in INVALID_TEXT):
+                        return f"Contains invalid text in sheet '{sheet}'"
     return None
 
 
 def column_letter(col_idx):
-    """Optimized column letter conversion with caching"""
-    if not hasattr(column_letter, "cache"):
-        column_letter.cache = {}
-
-    if col_idx in column_letter.cache:
-        return column_letter.cache[col_idx]
-
     letters = []
-    original_idx = col_idx
     while col_idx > 0:
         col_idx, remainder = divmod(col_idx - 1, 26)
         letters.append(chr(65 + remainder))
-
-    result = "".join(reversed(letters))
-    column_letter.cache[original_idx] = result
-    return result
+    return "".join(reversed(letters))
 
 
 def check_contains_vietnamese_characters(wb):
-    """Optimized Vietnamese character check with early exit and row limits"""
-    vietnamese_chars = INVALID_CHARS
-
-    for sheet_name in wb.sheetnames:
-        try:
-            ws = wb[sheet_name]
-            # Limit to first 1000 rows for performance
-            for row_idx, row in enumerate(
-                ws.iter_rows(values_only=True), start=1#, max_row=1000
-            ):
-                for col_idx, cell in enumerate(row, start=1):
-                    if isinstance(cell, str) and vietnamese_chars.intersection(
-                        set(cell)
-                    ):
-                        col_letter = column_letter(col_idx)
+    vietnamese_chars = set(INVALID_CHARS)
+    for sheet in wb.sheet_names:
+        df = wb.parse(sheet)
+        for col in df.columns:
+            if df[col].dtype == object:  # Check only string columns
+                for idx, cell in enumerate(df[col]):
+                    if isinstance(cell, str) and any(char in vietnamese_chars for char in cell):
+                        col_letter = column_letter(df.columns.get_loc(col) + 1)
+                        row_num = idx + 2  # +1 for 1-based index, +1 for header row
                         cell_preview = cell[:50] + "..." if len(cell) > 50 else cell
                         return (
-                            f"Contains Vietnamese characters at {sheet_name}!{col_letter}{row_idx} "
+                            f"Contains Vietnamese characters at {sheet}!{col_letter}{row_num} "
                             f"(value: '{cell_preview}')"
                         )
-        except Exception as e:
-            logger.warning(
-                f"Error checking Vietnamese chars in sheet {sheet_name}: {e}"
-            )
-            continue
     return None
 
 
 def check_valid_filename(file_path):
-    """Optimized filename check using pathlib"""
-    path_obj = Path(file_path)
-    filename = path_obj.name
-    path_parts = path_obj.parts
+    filename = os.path.basename(file_path)
+    parts = os.path.normpath(file_path).split(os.sep)
 
     for folder_name, expected_prefix in CATEGORY_PREFIX_MAP.items():
-        if folder_name in path_parts:
+        if folder_name in parts:
             if not filename.startswith(expected_prefix):
                 return f"Invalid filename for '{folder_name}'"
             break
@@ -132,115 +92,76 @@ def check_valid_filename(file_path):
 
 
 def check_invalid_sheet(wb):
-    """Use set intersection for faster sheet validation"""
-    invalid_found = INVALID_SHEETS.intersection(wb.sheetnames)
-    if invalid_found:
-        return f"Contains invalid sheet: {invalid_found.pop()}"
+    for sheet in INVALID_SHEETS:
+        if sheet in wb.sheet_names:
+            return f"Contains invalid sheet: {sheet}"
     return None
 
 
 def check_required_sheets(wb):
-    """Use set operations for faster sheet validation"""
-    missing_sheets = REQUIRED_SHEETS - set(wb.sheetnames)
-    if missing_sheets:
-        return f"Missing required sheet: {missing_sheets.pop()}"
+    for sheet in REQUIRED_SHEETS:
+        if sheet not in wb.sheet_names:
+            return f"Missing required sheet: {sheet}"
     return None
 
 
 def check_confirm_by(wb):
-    """Optimized confirm check with error handling"""
-    if "表紙" not in wb.sheetnames:
+    if "表紙" not in wb.sheet_names:
+        return None
+    df = wb.parse("表紙")
+    # Assuming P24 is column P (16th column), row 24 (0-based index 23)
+    if len(df) < 24 or df.iloc[23, 15] is None or pd.isna(df.iloc[23, 15]):
+        return "Missing Confirm"
+    return None
+
+
+def find_column_indexes(df, headers=("確認", "参考")):
+    return {col: idx for idx, col in enumerate(df.columns) if col in headers}
+
+
+def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
+    if "テスト項目" not in wb.sheet_names:
         return None
 
-    try:
-        ws = wb["表紙"]
-        cell_value = ws["P24"].value
-        return (
-            "Missing Confirm"
-            if cell_value is None or not str(cell_value).strip()
-            else None
-        )
-    except Exception as e:
-        logger.warning(f"Error checking confirm cell: {e}")
-        return "Error reading confirm cell"
+    df = wb.parse("テスト項目", header=2)  # Assuming headers are in row 3 (0-based index 2)
+    col_indexes = find_column_indexes(df)
+    if "確認" not in col_indexes:
+        return "Column '確認' not found"
+
+    status_col = col_indexes["確認"]
+    error_rows = []
+    consecutive_empty = 0
+
+    for idx, row in df.iterrows():
+        if consecutive_empty >= empty_limit:
+            break
+
+        b_value = row.iloc[1]  # Column B is index 1
+        if not pd.isna(b_value) and str(b_value).strip():
+            consecutive_empty = 0
+            status_value = row.iloc[status_col]
+            if pd.isna(status_value) or str(status_value).strip().upper() != "OK":
+                error_rows.append(str(b_value).strip())
+        else:
+            consecutive_empty += 1
+
+    return (
+        f"{len(error_rows)} TC(s) != 'OK': " + "; ".join(error_rows)
+        if error_rows
+        else None
+    )
 
 
-def find_column_indexes(ws, headers=("確認", "参考"), header_row=3):
-    """Optimized column index finding"""
-    try:
-        return {
-            cell.value: cell.column for cell in ws[header_row] if cell.value in headers
-        }
-    except Exception:
-        return {}
-
-
-def check_status_in_test_items(wb, max_rows=500, empty_limit=10):  # Reduced max_rows
-    """Optimized test item status check with better early termination"""
-    if "テスト項目" not in wb.sheetnames:
-        return None
-
-    try:
-        ws = wb["テスト項目"]
-        col_indexes = find_column_indexes(ws)
-        if "確認" not in col_indexes:
-            return "Column '確認' not found"
-
-        status_col = col_indexes["確認"]
-        error_rows = []
-        consecutive_empty = 0
-
-        # Use iter_rows for better performance
-        for row in ws.iter_rows(min_row=5, max_row=max_rows, values_only=False):
-            if consecutive_empty >= empty_limit:
-                break
-
-            b_cell = row[1]  # Column B (index 1)
-            if b_cell.value and str(b_cell.value).strip():
-                consecutive_empty = 0
-                # Get status cell by column index
-                status_cell = ws.cell(row=b_cell.row, column=status_col)
-                status_value = status_cell.value
-                if status_value is None or str(status_value).strip().upper() != "OK":
-                    error_rows.append(str(b_cell.value).strip())
-                    # Limit error collection for performance
-                    if len(error_rows) > 100:  # Stop collecting after 100 errors
-                        error_rows.append("... (more errors)")
-                        break
-            else:
-                consecutive_empty += 1
-
-        return (
-            f"{len(error_rows)} TC(s) != 'OK': "
-            + "; ".join(error_rows[:10])  # Limit display
-            if error_rows
-            else None
-        )
-    except Exception as e:
-        logger.warning(f"Error checking test items: {e}")
-        return f"Error checking test items: {e}"
-
-
-# --- Optimized Main Function ---
+# --- Main Function ---
 def check_excel_file_advanced(file_path, options):
-    """Optimized Excel file checking with better error handling and performance"""
     try:
         error_messages = []
+        wb = pd.ExcelFile(file_path)
 
-        # Use optimized openpyxl parameters for better performance
-        wb = load_workbook(
-            file_path,
-            data_only=True,
-            read_only=True,
-            keep_links=False,  # Disable external links for performance
-        )
-
-        # Quick filename check first (no file I/O)
         if options.get("check_filename_prefix", True):
             if err := check_valid_filename(file_path):
                 error_messages.append(err)
 
-        # Sheet existence checks (fast)
         if err := check_required_sheets(wb):
             error_messages.append(err)
 
@@ -248,7 +169,6 @@ def check_excel_file_advanced(file_path, options):
             if err := check_invalid_sheet(wb):
                 error_messages.append(err)
 
-        # Cell content checks (slower, do them last)
         if options.get("check_confirm_cell", True):
             if err := check_confirm_by(wb):
                 error_messages.append(err)
@@ -257,7 +177,6 @@ def check_excel_file_advanced(file_path, options):
             if err := check_status_in_test_items(wb):
                 error_messages.append(err)
 
-        # Most expensive checks last
         if options.get("check_contains_vietnamese_characters", True):
             if err := check_contains_vietnamese_characters(wb):
                 error_messages.append(err)
@@ -266,113 +185,79 @@ def check_excel_file_advanced(file_path, options):
             if err := check_invalid_text(wb):
                 error_messages.append(err)
 
-        wb.close()
         return ("ERROR", ", ".join(error_messages)) if error_messages else ("OK", "")
 
     except Exception as e:
-        logger.error(f"Error processing {file_path}: {e}")
         return "ERROR", str(e)
 
 
 def find_excel_files_recursive(folder_path):
-    """Optimized file finding using pathlib and generator"""
-    folder = Path(folder_path)
     excel_files = []
-
-    try:
-        # Use pathlib.rglob for better performance
-        for file_path in folder.rglob("*"):
-            if file_path.is_file() and file_path.suffix.lower() in [
-                ext.lower() for ext in EXCEL_EXTENSIONS
-            ]:
-                excel_files.append(str(file_path))
-    except Exception as e:
-        logger.error(f"Error scanning folder {folder_path}: {e}")
-
+    for root_dir, _, files in os.walk(folder_path):
+        for file in files:
+            if file.lower().endswith(EXCEL_EXTENSIONS):
+                excel_files.append(os.path.join(root_dir, file))
     return excel_files
 
 
-# ----------------- Optimized Worker Thread -----------------
+# ----------------- Worker Thread -----------------
 class ExcelCheckWorker(QThread):
     progress_changed = pyqtSignal(int)
-    file_result = pyqtSignal(str, str, str, str)
+    file_result = pyqtSignal(
+        str, str, str, str
+    )  # prefix_path, relative_path, status, error
     finished_signal = pyqtSignal()
 
-    def __init__(self, folder_path, options, max_workers=None):
+    def __init__(self, folder_path, options, max_workers=4):
         super().__init__()
         self.folder_path = folder_path
         self.options = options
-        # Optimize worker count based on CPU cores
-        if max_workers is None:
-            max_workers = min(8, (os.cpu_count() or 1) + 4)
         self.max_workers = max_workers
         self._is_running = True
 
     def run(self):
-        start_time = time.time()
         files = find_excel_files_recursive(self.folder_path)
         total = len(files)
-
         if not files:
             self.file_result.emit(self.folder_path, "", "INFO", "No Excel files found.")
             self.finished_signal.emit()
             return
 
-        logger.info(f"Processing {total} files with {self.max_workers} workers")
         processed = 0
-
-        # Use optimized ThreadPoolExecutor settings
-        with ThreadPoolExecutor(
-            max_workers=self.max_workers, thread_name_prefix="ExcelChecker"
-        ) as executor:
-            # Submit all tasks
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
                 executor.submit(check_excel_file_advanced, file, self.options): file
                 for file in files
             }
 
-            # Process results as they complete
             for future in as_completed(futures):
                 if not self._is_running:
                     break
 
                 file_path = futures[future]
-                try:
-                    relative_path = os.path.relpath(file_path, self.folder_path)
-                    status, error_msg = future.result(timeout=30)  # Add timeout
+                relative_path = os.path.relpath(file_path, self.folder_path)
+                status, error_msg = future.result()
 
-                    self.file_result.emit(
-                        self.folder_path, relative_path, status, error_msg
-                    )
-                except Exception as e:
-                    logger.error(f"Error processing {file_path}: {e}")
-                    relative_path = os.path.relpath(file_path, self.folder_path)
-                    self.file_result.emit(
-                        self.folder_path, relative_path, "ERROR", str(e)
-                    )
+                self.file_result.emit(
+                    self.folder_path, relative_path, status, error_msg
+                )
 
                 processed += 1
-                progress = int((processed / total) * 100)
-                self.progress_changed.emit(progress)
+                self.progress_changed.emit(int((processed / total) * 100))
 
-        elapsed = time.time() - start_time
-        logger.info(f"Processing completed in {elapsed:.2f} seconds")
         self.finished_signal.emit()
 
     def stop(self):
         self._is_running = False
 
 
-# ----------------- Optimized PyQt Main Window -----------------
+# ----------------- PyQt Main Window -----------------
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Excel Checker - Optimized")
-        self.setGeometry(100, 100, 1200, 700)  # Larger window
+        self.setWindowTitle("Excel Checker")
+        self.setGeometry(100, 100, 1000, 600)
         self.worker = None
-
-        # Performance tracking
-        self.start_time = None
 
         self.init_ui()
 
@@ -391,54 +276,49 @@ class MainWindow(QWidget):
         input_layout.addWidget(self.folder_input)
         input_layout.addWidget(self.btn_select)
 
-        # Options section with better layout
+        # Options section
         option_layout = QVBoxLayout()
         self.confirm_cell_cb = QCheckBox("1. Check confirm")
-        self.testcase_status_cb = QCheckBox("2. Check test case status != 'OK'")
+        self.testcase_status_cb = QCheckBox("2. Check test case status")
         self.filename_check_cb = QCheckBox("3. Check filename prefix")
-        self.sheet_check_cb = QCheckBox("4. Check invalid/missing sheets")
+        self.sheet_check_cb = QCheckBox("4. Check contains invalid sheets")
         self.check_contains_vietnamese_characters_cb = QCheckBox(
-            "5. Check Vietnamese characters (performance impact)"
+            "5. Check contains Vietnamese characters for JP files"
         )
-        self.check_invalid_text_cb = QCheckBox("6. Check invalid text patterns")
+        self.check_invalid_text_cb = QCheckBox("6. Check contains invalid text")
 
-        # Set defaults with performance considerations
+        # Set defaults
         self.confirm_cell_cb.setChecked(True)
         self.testcase_status_cb.setChecked(True)
         self.filename_check_cb.setChecked(True)
         self.sheet_check_cb.setChecked(True)
-        self.check_contains_vietnamese_characters_cb.setChecked(False)  # Expensive
-        self.check_invalid_text_cb.setChecked(False)  # Expensive
+        self.check_contains_vietnamese_characters_cb.setChecked(False)
+        self.check_invalid_text_cb.setChecked(False)
 
-        for cb in [
-            self.confirm_cell_cb,
-            self.testcase_status_cb,
-            self.filename_check_cb,
-            self.sheet_check_cb,
-            self.check_contains_vietnamese_characters_cb,
-            self.check_invalid_text_cb,
-        ]:
-            option_layout.addWidget(cb)
+        option_layout.addWidget(self.confirm_cell_cb)
+        option_layout.addWidget(self.testcase_status_cb)
+        option_layout.addWidget(self.filename_check_cb)
+        option_layout.addWidget(self.sheet_check_cb)
+        option_layout.addWidget(self.check_contains_vietnamese_characters_cb)
+        option_layout.addWidget(self.check_invalid_text_cb)
 
         # Button section
         button_layout = QHBoxLayout()
         self.btn_execute = QPushButton("Execute")
         self.btn_execute.setEnabled(False)
         self.btn_execute.clicked.connect(self.start_execution)
-
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self.stop_execution)
-
         self.btn_export = QPushButton("Export Results")
         self.btn_export.setEnabled(False)
         self.btn_export.clicked.connect(self.export_results)
+        button_layout.addWidget(self.btn_export)
 
         button_layout.addWidget(self.btn_execute)
         button_layout.addWidget(self.btn_stop)
-        button_layout.addWidget(self.btn_export)
 
-        # Table widget with optimizations
+        # Table widget
         self.table = QTableWidget()
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(
@@ -449,20 +329,15 @@ class MainWindow(QWidget):
         self.table.itemDoubleClicked.connect(self.open_selected_file)
         self.table.setSortingEnabled(True)
 
-        # Optimize table performance
-        self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setVisible(False)
-
         # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setAlignment(Qt.AlignCenter)
         self.progress_bar.setValue(0)
 
-        # Status label with performance info
+        # Status label
         config_info_label = QLabel(
             "Note: Case 3, 4, 5, and 6 are configurable.\n"
-            "Options 5 and 6 have significant performance impact on large files.\n"
-            "Configuration can be modified in 'config.json'."
+            "You can change their rules in the 'config.json' file located in the tool's directory."
         )
         config_info_label.setStyleSheet("color: gray; font-size: 11px;")
         config_info_label.setWordWrap(True)
@@ -481,8 +356,7 @@ class MainWindow(QWidget):
         self.setLayout(main_layout)
 
     def on_folder_input_change(self, text):
-        path = text.strip()
-        self.btn_execute.setEnabled(os.path.isdir(path))
+        self.btn_execute.setEnabled(os.path.isdir(text.strip()))
 
     def select_folder(self):
         current_path = self.folder_input.text().strip()
@@ -502,14 +376,11 @@ class MainWindow(QWidget):
             )
             return
 
-        # Performance tracking
-        self.start_time = time.time()
-
         self.progress_bar.setValue(0)
         self.table.setRowCount(0)
         self.btn_execute.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.status_label.setText("Scanning files...")
+        self.status_label.setText("Processing...")
 
         options = {
             "check_invalid_sheets": self.sheet_check_cb.isChecked(),
@@ -520,13 +391,7 @@ class MainWindow(QWidget):
             "check_invalid_text": self.check_invalid_text_cb.isChecked(),
         }
 
-        # Reload config for any changes
-        global CONFIG
-        try:
-            CONFIG = load_config()
-        except Exception as e:
-            logger.warning(f"Could not reload config: {e}")
-
+        load_config()
         self.worker = ExcelCheckWorker(folder_path, options)
         self.worker.progress_changed.connect(self.progress_bar.setValue)
         self.worker.file_result.connect(self.add_table_row)
@@ -536,7 +401,7 @@ class MainWindow(QWidget):
     def stop_execution(self):
         if self.worker:
             self.worker.stop()
-            self.worker.wait(5000)  # Wait up to 5 seconds
+            self.worker.wait()
             self.status_label.setText("Process stopped by user")
             self.btn_execute.setEnabled(True)
             self.btn_stop.setEnabled(False)
@@ -545,51 +410,32 @@ class MainWindow(QWidget):
         row = self.table.rowCount()
         self.table.insertRow(row)
 
-        # Create items with optimized formatting
         items = [
             QTableWidgetItem(prefix_path),
             QTableWidgetItem(path.replace("\\", "/")),
             QTableWidgetItem(status),
-            QTableWidgetItem(
-                error[:500] + "..." if len(error) > 500 else error
-            ),  # Truncate long errors
+            QTableWidgetItem(error),
         ]
 
-        # Color coding
         if status == "OK":
             items[2].setForeground(QColor("green"))
         elif status == "ERROR":
             items[2].setForeground(QColor("red"))
-        elif status == "INFO":
-            items[2].setForeground(QColor("blue"))
 
         for col, item in enumerate(items):
             self.table.setItem(row, col, item)
 
-        # Enable export after first result
         if row == 0:
             self.btn_export.setEnabled(True)
 
-        # Update status with current progress
-        if row % 10 == 0:  # Update every 10 files to reduce UI overhead
-            self.status_label.setText(f"Processing... ({row + 1} files processed)")
-
     def open_selected_file(self, item):
         row = item.row()
-        if row >= self.table.rowCount():
-            return
-
-        path_item = self.table.item(row, 1)
-        if not path_item:
-            return
-
-        path = os.path.join(self.folder_input.text(), path_item.text())
+        path = os.path.join(self.folder_input.text(), self.table.item(row, 1).text())
 
         if os.path.exists(path):
             try:
                 modifiers = QApplication.keyboardModifiers()
                 if modifiers == Qt.ControlModifier:
-                    # Open folder
                     folder_path = os.path.dirname(path)
                     if os.name == "nt":
                         os.startfile(folder_path)
@@ -598,7 +444,7 @@ class MainWindow(QWidget):
                     else:
                         subprocess.call(["xdg-open", folder_path])
                 else:
-                    # Open file
+                    # Open the file
                     if os.name == "nt":
                         os.startfile(path)
                     elif sys.platform == "darwin":
@@ -613,24 +459,13 @@ class MainWindow(QWidget):
     def on_finished(self):
         self.btn_execute.setEnabled(True)
         self.btn_stop.setEnabled(False)
-
-        # Show performance info
-        if self.start_time:
-            elapsed = time.time() - self.start_time
-            file_count = self.table.rowCount()
-            rate = file_count / elapsed if elapsed > 0 else 0
-            self.status_label.setText(
-                f"Completed: {file_count} files in {elapsed:.1f}s ({rate:.1f} files/sec)"
-            )
-        else:
-            self.status_label.setText("Process completed")
-
+        self.status_label.setText("Process completed")
         QMessageBox.information(self, "Done", "Check completed.")
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
-            self.worker.wait(3000)  # Wait up to 3 seconds
+            self.worker.wait()
         event.accept()
 
     def export_results(self):
@@ -641,73 +476,62 @@ class MainWindow(QWidget):
         default_name = (
             f"Excel_Check_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         )
+        # Get save file path
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Save Results", default_name, "Excel Files (*.xlsx);;All Files (*)"
         )
 
         if not file_path:
-            return
+            return  # User cancelled
 
+        # Ensure .xlsx extension
         if not file_path.lower().endswith(".xlsx"):
             file_path += ".xlsx"
 
         try:
-            from openpyxl import Workbook
-            from openpyxl.styles import Font, Alignment, PatternFill
-
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Check Results"
-
-            # Write headers with styling
-            headers = ["Prefix Path", "Relative Path", "Status", "Errors"]
-            for col, header in enumerate(headers, 1):
-                cell = ws.cell(row=1, column=col, value=header)
-                cell.font = Font(bold=True)
-                cell.alignment = Alignment(horizontal="center")
-                cell.fill = PatternFill(
-                    start_color="DDDDDD", end_color="DDDDDD", fill_type="solid"
-                )
-
-            # Write data with conditional formatting
+            # Create a DataFrame from the table data
+            data = []
             for row in range(self.table.rowCount()):
+                row_data = []
                 for col in range(self.table.columnCount()):
                     item = self.table.item(row, col)
-                    cell = ws.cell(
-                        row=row + 2, column=col + 1, value=item.text() if item else ""
-                    )
+                    row_data.append(item.text() if item else "")
+                data.append(row_data)
 
-                    # Color code status column
-                    if col == 2 and item:  # Status column
-                        if item.text() == "OK":
-                            cell.fill = PatternFill(
-                                start_color="90EE90",
-                                end_color="90EE90",
-                                fill_type="solid",
-                            )
-                        elif item.text() == "ERROR":
-                            cell.fill = PatternFill(
-                                start_color="FFB6C1",
-                                end_color="FFB6C1",
-                                fill_type="solid",
-                            )
+            df = pd.DataFrame(data, columns=["Prefix Path", "Relative Path", "Status", "Errors"])
 
-            # Auto-size columns
-            for column in ws.columns:
-                max_length = 0
-                column_letter = column[0].column_letter
-                for cell in column[
-                    : min(100, len(list(column)))
-                ]:  # Limit for performance
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-                    except:
-                        pass
-                adjusted_width = min((max_length + 2) * 1.2, 100)  # Cap width
-                ws.column_dimensions[column_letter].width = adjusted_width
-
-            wb.save(file_path)
+            # Export to Excel
+            writer = pd.ExcelWriter(file_path, engine='xlsxwriter')
+            df.to_excel(writer, index=False, sheet_name='Check Results')
+            
+            # Get the xlsxwriter workbook and worksheet objects
+            workbook = writer.book
+            worksheet = writer.sheets['Check Results']
+            
+            # Add a header format
+            header_format = workbook.add_format({
+                'bold': True,
+                'text_wrap': True,
+                'valign': 'top',
+                'fg_color': '#D7E4BC',
+                'border': 1,
+                'align': 'center'
+            })
+            
+            # Write the column headers with the defined format
+            for col_num, value in enumerate(df.columns.values):
+                worksheet.write(0, col_num, value, header_format)
+            
+            # Auto-adjust column widths
+            for i, col in enumerate(df.columns):
+                max_len = max((
+                    df[col].astype(str).map(len).max(),  # Max length in column
+                    len(col)  # Length of column header
+                )) + 2  # Add a little extra space
+                worksheet.set_column(i, i, max_len)
+            
+            writer.close()
+            
             QMessageBox.information(
                 self, "Success", f"Results exported to:\n{file_path}"
             )
