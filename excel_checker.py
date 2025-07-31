@@ -34,11 +34,11 @@ CONFIG = load_config()
 
 # --- Constants ---
 CATEGORY_PREFIX_MAP = CONFIG["category_prefix_map"]
-INVALID_SHEETS = CONFIG["invalid_sheets"]
-REQUIRED_SHEETS = CONFIG["required_sheets"]
+INVALID_SHEETS = set(CONFIG["invalid_sheets"])
+REQUIRED_SHEETS = set(CONFIG["required_sheets"])
 EXCEL_EXTENSIONS = tuple(CONFIG["excel_extensions"])
-INVALID_CHARS = CONFIG["invalid_chars"]
-INVALID_TEXT = CONFIG["invalid_text"]
+INVALID_CHARS = set(CONFIG["invalid_chars"])
+INVALID_TEXT = set(CONFIG["invalid_text"])
 
 
 # --- Helper Functions ---
@@ -52,30 +52,50 @@ def check_invalid_text(wb):
     return None
 
 
-def column_letter(col_idx):
-    letters = []
-    while col_idx > 0:
-        col_idx, remainder = divmod(col_idx - 1, 26)
-        letters.append(chr(65 + remainder))
-    return "".join(reversed(letters))
+# def column_letter(col_idx):
+#     letters = []
+#     while col_idx > 0:
+#         col_idx, remainder = divmod(col_idx - 1, 26)
+#         letters.append(chr(65 + remainder))
+#     return "".join(reversed(letters))
+
+
+# def check_contains_vietnamese_characters(wb):
+#     vietnamese_chars = set(INVALID_CHARS)
+#     for sheet in wb.sheetnames:
+#         ws = wb[sheet]
+#         for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+#             for col_idx, cell in enumerate(row, start=1):
+#                 if isinstance(cell, str) and any(
+#                     char in vietnamese_chars for char in cell
+#                 ):
+#                     col_letter = column_letter(col_idx)
+#                     cell_preview = cell[:50] + "..." if len(cell) > 50 else cell
+#                     return (
+#                         f"Contains Vietnamese characters at {sheet}!{col_letter}{row_idx} "
+#                         f"(value: '{cell_preview}')"
+#                     )
+#     return None
 
 
 def check_contains_vietnamese_characters(wb):
-    vietnamese_chars = set(INVALID_CHARS)
+    results = ""
     for sheet in wb.sheetnames:
         ws = wb[sheet]
-        for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
-            for col_idx, cell in enumerate(row, start=1):
-                if isinstance(cell, str) and any(
-                    char in vietnamese_chars for char in cell
-                ):
-                    col_letter = column_letter(col_idx)
-                    cell_preview = cell[:50] + "..." if len(cell) > 50 else cell
-                    return (
-                        f"Contains Vietnamese characters at {sheet}!{col_letter}{row_idx} "
-                        f"(value: '{cell_preview}')"
-                    )
-    return None
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value and isinstance(cell.value, str):
+                    for char in INVALID_CHARS:
+                        if char in cell.value:
+                            print(ws.title, cell.value, cell.coordinate)
+                            results += (
+                                f"sheet: {ws.title}, "
+                                f"cell: {cell.coordinate}, "
+                                f"value: {cell.value}; "
+                            )
+                            break
+
+    return results
 
 
 def check_valid_filename(file_path):
