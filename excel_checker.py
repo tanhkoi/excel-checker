@@ -439,6 +439,7 @@ class MainWindow(QWidget):
             self.btn_stop.setEnabled(False)
 
     def add_table_row(self, prefix_path, path, status, error):
+        self.status_label.setText(f"Processing: {path}")
         row = self.table.rowCount()
         self.table.insertRow(row)
 
@@ -493,8 +494,15 @@ class MainWindow(QWidget):
     def on_finished(self):
         self.btn_execute.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        total_files = self.table.rowCount()
+        error_count = sum(
+            1 for row in range(total_files) if self.table.item(row, 2).text() == "ERROR"
+        )
+        ok_count = total_files - error_count
+        summary = f"Check completed.\nTotal files: {total_files}\nOK: {ok_count}\nErrors: {error_count}"
+        self.status_label.setText(summary)
         self.status_label.setText("Process completed")
-        QMessageBox.information(self, "Done", "Check completed.")
+        QMessageBox.information(self, "Done", summary)
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
