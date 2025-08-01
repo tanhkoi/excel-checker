@@ -47,6 +47,6 @@ jobs:
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
-        files: excel_checker
+        files: excel_checker/excel_checker.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
