@@ -99,7 +99,7 @@ def check_required_sheets(wb):
 
 def check_confirm_by(wb):
     if "表紙" not in wb.sheetnames:
-        return None
+        return f"Missing required sheet: '表紙'"
     ws = wb["表紙"]
     for row in ws.iter_rows(
         min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column
@@ -125,7 +125,7 @@ def find_column_indexes(ws, headers=("確認", "参考"), header_rows=(3, 4)):
 
 def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
     if "テスト項目" not in wb.sheetnames:
-        return None
+        return f"Missing required sheet: 'テスト項目"
 
     ws = wb["テスト項目"]
     col_indexes = find_column_indexes(ws)
@@ -166,11 +166,12 @@ def check_excel_file_advanced(file_path, options):
             if err := check_valid_filename(file_path):
                 error_messages.append(err)
 
-        if err := check_required_sheets(wb):
-            error_messages.append(err)
-
         if options.get("check_invalid_sheets", True):
             if err := check_invalid_sheet(wb):
+                error_messages.append(err)
+
+        if options.get("check_required_sheets", True):
+            if err := check_required_sheets(wb):
                 error_messages.append(err)
 
         if options.get("check_confirm_cell", True):
@@ -284,23 +285,26 @@ class MainWindow(QWidget):
         # Options section
         option_layout = QVBoxLayout()
         self.confirm_cell_cb = QCheckBox("1. Check confirm")
-        self.testcase_status_cb = QCheckBox("2. Check test case status")
-        self.filename_check_cb = QCheckBox("3. Check filename prefix")
-        self.sheet_check_cb = QCheckBox("4. Check contains invalid sheets")
+        self.sheet_req_check_cb = QCheckBox("2. Check required sheets")
+        self.testcase_status_cb = QCheckBox("3. Check test case status")
+        self.filename_check_cb = QCheckBox("4. Check filename prefix")
+        self.sheet_check_cb = QCheckBox("5. Check contains invalid sheets")
         self.check_contains_vietnamese_characters_cb = QCheckBox(
-            "5. Check contains Vietnamese characters for JP files"
+            "6. Check contains Vietnamese characters for JP files"
         )
-        self.check_invalid_text_cb = QCheckBox("6. Check contains invalid text")
+        self.check_invalid_text_cb = QCheckBox("7. Check contains invalid text")
 
         # Set defaults
-        self.confirm_cell_cb.setChecked(True)
-        self.testcase_status_cb.setChecked(True)
-        self.filename_check_cb.setChecked(True)
-        self.sheet_check_cb.setChecked(True)
+        self.confirm_cell_cb.setChecked(False)
+        self.testcase_status_cb.setChecked(False)
+        self.filename_check_cb.setChecked(False)
+        self.sheet_req_check_cb.setChecked(False)
+        self.sheet_check_cb.setChecked(False)
         self.check_contains_vietnamese_characters_cb.setChecked(False)
         self.check_invalid_text_cb.setChecked(False)
 
         option_layout.addWidget(self.confirm_cell_cb)
+        option_layout.addWidget(self.sheet_req_check_cb)
         option_layout.addWidget(self.testcase_status_cb)
         option_layout.addWidget(self.filename_check_cb)
         option_layout.addWidget(self.sheet_check_cb)
@@ -341,7 +345,7 @@ class MainWindow(QWidget):
 
         # Status label
         config_info_label = QLabel(
-            "Note: Case 3, 4, 5, and 6 are configurable.\n"
+            "Note: Case 2, 3, 4, 5, and 6 are configurable.\n"
             "You can change their rules in the 'config.json' file located in the tool's directory."
         )
         config_info_label.setStyleSheet("color: gray; font-size: 11px;")
@@ -390,6 +394,7 @@ class MainWindow(QWidget):
         options = {
             "check_invalid_sheets": self.sheet_check_cb.isChecked(),
             "check_filename_prefix": self.filename_check_cb.isChecked(),
+            "check_required_sheets": self.sheet_req_check_cb.isChecked(),
             "check_confirm_cell": self.confirm_cell_cb.isChecked(),
             "check_testcase_status": self.testcase_status_cb.isChecked(),
             "check_contains_vietnamese_characters": self.check_contains_vietnamese_characters_cb.isChecked(),
