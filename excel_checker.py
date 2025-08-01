@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, CancelledError
 import json
 from datetime import datetime
 import re
+from threading import Event
 
 
 def load_config(config_path="config.json"):
@@ -158,36 +159,63 @@ def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
 
 
 # --- Main Function ---
-def check_excel_file_advanced(file_path, options):
+def check_excel_file_advanced(file_path, options, stop_event=None):
+    if stop_event and stop_event.is_set():
+        return "CANCELLED", "Process was cancelled by user."
     try:
         error_messages = []
         wb = load_workbook(file_path, data_only=True, read_only=True)
 
+        if stop_event and stop_event.is_set():
+            wb.close()
+            return "CANCELLED", "Process was cancelled by user."
+
         if options.get("check_filename_prefix", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_valid_filename(file_path):
                 error_messages.append(err)
 
         if options.get("check_invalid_sheets", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_invalid_sheet(wb):
                 error_messages.append(err)
 
         if options.get("check_required_sheets", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_required_sheets(wb):
                 error_messages.append(err)
 
         if options.get("check_confirm_cell", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_confirm_by(wb):
                 error_messages.append(err)
 
         if options.get("check_testcase_status", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_status_in_test_items(wb):
                 error_messages.append(err)
 
         if options.get("check_contains_vietnamese_characters", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_contains_vietnamese_characters(wb):
                 error_messages.append(err)
 
         if options.get("check_invalid_text", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_invalid_text(wb):
                 error_messages.append(err)
 
@@ -208,6 +236,9 @@ def find_excel_files_recursive(folder_path):
 
 
 # ----------------- Worker Thread -----------------
+from threading import Event
+
+
 class ExcelCheckWorker(QThread):
     progress_changed = pyqtSignal(int)
     file_result = pyqtSignal(
@@ -220,9 +251,7 @@ class ExcelCheckWorker(QThread):
         self.folder_path = folder_path
         self.options = options
         self.max_workers = max_workers
-        self._is_running = True
-        self._executor = None
-        self._futures = {}
+        self._stop_event = Event()
 
     def run(self):
         files = find_excel_files_recursive(self.folder_path)
@@ -233,31 +262,24 @@ class ExcelCheckWorker(QThread):
             return
 
         processed = 0
-        chunk_size = 20  # Adjust based on your system resources
+        chunk_size = 5
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as self._executor:
-            # Process files in chunks instead of all at once
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             for i in range(0, len(files), chunk_size):
-                if not self._is_running:
+                if self._stop_event.is_set():
                     break
 
                 current_chunk = files[i : i + chunk_size]
-                chunk_futures = {}
+                chunk_futures = {
+                    executor.submit(
+                        check_excel_file_advanced, file, self.options, self._stop_event
+                    ): file
+                    for file in current_chunk
+                }
 
-                # Submit current chunk of files
-                for file in current_chunk:
-                    if not self._is_running:
-                        break
-                    future = self._executor.submit(
-                        check_excel_file_advanced, file, self.options
-                    )
-                    chunk_futures[future] = file
-
-                # Process results from current chunk
                 for future in as_completed(chunk_futures):
-                    if not self._is_running:
-                        future.cancel()
-                        continue
+                    if self._stop_event.is_set():
+                        break
 
                     file_path = chunk_futures[future]
                     try:
@@ -266,8 +288,6 @@ class ExcelCheckWorker(QThread):
                         self.file_result.emit(
                             self.folder_path, relative_path, status, error_msg
                         )
-                    except CancelledError:
-                        continue  # Skip cancelled tasks
                     except Exception as e:
                         self.file_result.emit(
                             self.folder_path,
@@ -282,10 +302,7 @@ class ExcelCheckWorker(QThread):
         self.finished_signal.emit()
 
     def stop(self):
-        self._is_running = False
-        if self._executor:
-            for future in self._futures:
-                future.cancel()
+        self._stop_event.set()
 
 
 # ----------------- PyQt Main Window -----------------
@@ -446,7 +463,6 @@ class MainWindow(QWidget):
             self.status_label.setText("Process stopped by user")
             QApplication.processEvents()
             self.worker.stop()
-            self.worker.wait()
             self.btn_stop.setText("Stop")
             self.btn_execute.setEnabled(True)
 
@@ -506,20 +522,25 @@ class MainWindow(QWidget):
     def on_finished(self):
         self.btn_execute.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        total_files = self.table.rowCount()
-        error_count = sum(
-            1 for row in range(total_files) if self.table.item(row, 2).text() == "ERROR"
-        )
-        ok_count = total_files - error_count
-        summary = f"Check completed.\nTotal files: {total_files}\nOK: {ok_count}\nErrors: {error_count}"
-        self.status_label.setText(summary)
-        self.status_label.setText("Process completed")
-        QMessageBox.information(self, "Done", summary)
+
+        if self.worker._stop_event.is_set():
+            self.status_label.setText("Process stopped by user")
+            QMessageBox.information(self, "Stopped", "Process was stopped by user.")
+        else:
+            total_files = self.table.rowCount()
+            error_count = sum(
+                1
+                for row in range(total_files)
+                if self.table.item(row, 2).text() == "ERROR"
+            )
+            ok_count = total_files - error_count
+            summary = f"Check completed.\nTotal files: {total_files}\nOK: {ok_count}\nErrors: {error_count}"
+            self.status_label.setText("Process completed")
+            QMessageBox.information(self, "Done", summary)
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
-            self.worker.wait()
         event.accept()
 
     def export_results(self):
