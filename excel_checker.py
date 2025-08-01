@@ -443,8 +443,8 @@ class MainWindow(QWidget):
         self.table.insertRow(row)
 
         items = [
-            QTableWidgetItem(prefix_path),
-            QTableWidgetItem(path.replace("\\", "/")),
+            QTableWidgetItem(prefix_path.replace("/", "\\")),
+            QTableWidgetItem(path),
             QTableWidgetItem(status),
             QTableWidgetItem(error),
         ]
@@ -462,7 +462,10 @@ class MainWindow(QWidget):
 
     def open_selected_file(self, item):
         row = item.row()
-        path = os.path.join(self.folder_input.text(), self.table.item(row, 1).text())
+        path = os.path.join(
+            self.table.item(row, 0).text(), self.table.item(row, 1).text()
+        )
+        print(f"Opening file: {path}")
 
         if os.path.exists(path):
             try:
@@ -476,7 +479,6 @@ class MainWindow(QWidget):
                     else:
                         subprocess.call(["xdg-open", folder_path])
                 else:
-                    # Open the file
                     if os.name == "nt":
                         os.startfile(path)
                     elif sys.platform == "darwin":
