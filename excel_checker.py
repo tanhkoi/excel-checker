@@ -52,32 +52,6 @@ def check_invalid_text(wb):
     return None
 
 
-# def column_letter(col_idx):
-#     letters = []
-#     while col_idx > 0:
-#         col_idx, remainder = divmod(col_idx - 1, 26)
-#         letters.append(chr(65 + remainder))
-#     return "".join(reversed(letters))
-
-
-# def check_contains_vietnamese_characters(wb):
-#     vietnamese_chars = set(INVALID_CHARS)
-#     for sheet in wb.sheetnames:
-#         ws = wb[sheet]
-#         for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
-#             for col_idx, cell in enumerate(row, start=1):
-#                 if isinstance(cell, str) and any(
-#                     char in vietnamese_chars for char in cell
-#                 ):
-#                     col_letter = column_letter(col_idx)
-#                     cell_preview = cell[:50] + "..." if len(cell) > 50 else cell
-#                     return (
-#                         f"Contains Vietnamese characters at {sheet}!{col_letter}{row_idx} "
-#                         f"(value: '{cell_preview}')"
-#                     )
-#     return None
-
-
 def check_contains_vietnamese_characters(wb):
     results = ""
     for sheet in wb.sheetnames:
@@ -94,7 +68,6 @@ def check_contains_vietnamese_characters(wb):
                                 f"value: {cell.value}; "
                             )
                             break
-
     return results
 
 
