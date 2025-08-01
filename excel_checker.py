@@ -17,12 +17,13 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QCheckBox,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, CancelledError
 import json
 from datetime import datetime
+import re
 
 
 def load_config(config_path="config.json"):
@@ -54,20 +55,20 @@ def check_invalid_text(wb):
 
 def check_contains_vietnamese_characters(wb):
     results = ""
+    pattern = re.compile(f"[{''.join(re.escape(c) for c in INVALID_CHARS)}]")
     for sheet in wb.sheetnames:
         ws = wb[sheet]
         for row in ws.iter_rows():
             for cell in row:
                 if cell.value and isinstance(cell.value, str):
-                    for char in INVALID_CHARS:
-                        if char in cell.value:
-                            print(ws.title, cell.value, cell.coordinate)
-                            results += (
-                                f"sheet: {ws.title}, "
-                                f"cell: {cell.coordinate}, "
-                                f"value: {cell.value}; "
-                            )
-                            break
+                    if pattern.search(cell.value):
+                        print(ws.title, cell.value, cell.coordinate)
+                        results += (
+                            f"sheet: {ws.title}, "
+                            f"cell: {cell.coordinate}, "
+                            f"value: {cell.value}; "
+                        )
+                        break
     return results
 
 
@@ -220,6 +221,8 @@ class ExcelCheckWorker(QThread):
         self.options = options
         self.max_workers = max_workers
         self._is_running = True
+        self._executor = None
+        self._futures = {}
 
     def run(self):
         files = find_excel_files_recursive(self.folder_path)
@@ -230,31 +233,59 @@ class ExcelCheckWorker(QThread):
             return
 
         processed = 0
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(check_excel_file_advanced, file, self.options): file
-                for file in files
-            }
+        chunk_size = 20  # Adjust based on your system resources
 
-            for future in as_completed(futures):
+        with ThreadPoolExecutor(max_workers=self.max_workers) as self._executor:
+            # Process files in chunks instead of all at once
+            for i in range(0, len(files), chunk_size):
                 if not self._is_running:
                     break
 
-                file_path = futures[future]
-                relative_path = os.path.relpath(file_path, self.folder_path)
-                status, error_msg = future.result()
+                current_chunk = files[i : i + chunk_size]
+                chunk_futures = {}
 
-                self.file_result.emit(
-                    self.folder_path, relative_path, status, error_msg
-                )
+                # Submit current chunk of files
+                for file in current_chunk:
+                    if not self._is_running:
+                        break
+                    future = self._executor.submit(
+                        check_excel_file_advanced, file, self.options
+                    )
+                    chunk_futures[future] = file
 
-                processed += 1
-                self.progress_changed.emit(int((processed / total) * 100))
+                # Process results from current chunk
+                for future in as_completed(chunk_futures):
+                    if not self._is_running:
+                        future.cancel()
+                        continue
+
+                    file_path = chunk_futures[future]
+                    try:
+                        relative_path = os.path.relpath(file_path, self.folder_path)
+                        status, error_msg = future.result()
+                        self.file_result.emit(
+                            self.folder_path, relative_path, status, error_msg
+                        )
+                    except CancelledError:
+                        continue  # Skip cancelled tasks
+                    except Exception as e:
+                        self.file_result.emit(
+                            self.folder_path,
+                            os.path.relpath(file_path, self.folder_path),
+                            "ERROR",
+                            str(e),
+                        )
+
+                    processed += 1
+                    self.progress_changed.emit(int((processed / total) * 100))
 
         self.finished_signal.emit()
 
     def stop(self):
         self._is_running = False
+        if self._executor:
+            for future in self._futures:
+                future.cancel()
 
 
 # ----------------- PyQt Main Window -----------------
@@ -319,7 +350,7 @@ class MainWindow(QWidget):
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self.stop_execution)
-        self.btn_export = QPushButton("Export Results")
+        self.btn_export = QPushButton("Export results to Excel")
         self.btn_export.setEnabled(False)
         self.btn_export.clicked.connect(self.export_results)
         button_layout.addWidget(self.btn_export)
@@ -410,14 +441,17 @@ class MainWindow(QWidget):
 
     def stop_execution(self):
         if self.worker:
+            self.btn_stop.setText("Stopping...")
+            self.btn_stop.setEnabled(False)
+            self.status_label.setText("Process stopped by user")
+            QApplication.processEvents()
             self.worker.stop()
             self.worker.wait()
-            self.status_label.setText("Process stopped by user")
+            self.btn_stop.setText("Stop")
             self.btn_execute.setEnabled(True)
-            self.btn_stop.setEnabled(False)
 
     def add_table_row(self, prefix_path, path, status, error):
-        self.status_label.setText(f"Processing: {path}")
+        # self.status_label.setText(f"Processing: {path}")
         row = self.table.rowCount()
         self.table.insertRow(row)
 
