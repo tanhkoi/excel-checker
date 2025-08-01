@@ -44,23 +44,37 @@ INVALID_TEXT = set(CONFIG["invalid_text"])
 
 
 # --- Helper Functions ---
-def check_invalid_text(wb):
+def check_invalid_text(wb, stop_event=None):
+    if stop_event and stop_event.is_set():
+        return "CANCELLED", "Process was cancelled by user."
     for sheet in wb.sheetnames:
         ws = wb[sheet]
+        if stop_event and stop_event.is_set():
+            return "CANCELLED", "Process was cancelled by user."
         for row in ws.iter_rows(values_only=True):
+            if stop_event and stop_event.is_set():
+                return "CANCELLED", "Process was cancelled by user."
             for cell in row:
                 if isinstance(cell, str) and any(text in cell for text in INVALID_TEXT):
                     return f"Contains invalid text in sheet '{sheet}'"
     return None
 
 
-def check_contains_vietnamese_characters(wb):
+def check_contains_vietnamese_characters(wb, stop_event=None):
     results = ""
+    if stop_event and stop_event.is_set():
+        return results
     pattern = re.compile(f"[{''.join(re.escape(c) for c in INVALID_CHARS)}]")
     for sheet in wb.sheetnames:
         ws = wb[sheet]
+        if stop_event and stop_event.is_set():
+            return results
         for row in ws.iter_rows():
+            if stop_event and stop_event.is_set():
+                return results
             for cell in row:
+                if stop_event and stop_event.is_set():
+                    return results
                 if cell.value and isinstance(cell.value, str):
                     if pattern.search(cell.value):
                         print(ws.title, cell.value, cell.coordinate)
@@ -209,7 +223,7 @@ def check_excel_file_advanced(file_path, options, stop_event=None):
             if stop_event and stop_event.is_set():
                 wb.close()
                 return "CANCELLED", "Process was cancelled by user."
-            if err := check_contains_vietnamese_characters(wb):
+            if err := check_contains_vietnamese_characters(wb, stop_event):
                 error_messages.append(err)
 
         if options.get("check_invalid_text", True):
@@ -236,9 +250,6 @@ def find_excel_files_recursive(folder_path):
 
 
 # ----------------- Worker Thread -----------------
-from threading import Event
-
-
 class ExcelCheckWorker(QThread):
     progress_changed = pyqtSignal(int)
     file_result = pyqtSignal(
@@ -262,10 +273,10 @@ class ExcelCheckWorker(QThread):
             return
 
         processed = 0
-        chunk_size = 5
+        chunk_size = 4
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            for i in range(0, len(files), chunk_size):
+            for i in range(0, total, chunk_size):
                 if self._stop_event.is_set():
                     break
 
@@ -460,7 +471,10 @@ class MainWindow(QWidget):
         if self.worker:
             self.btn_stop.setText("Stopping...")
             self.btn_stop.setEnabled(False)
-            self.status_label.setText("Process stopped by user")
+            self.btn_execute.setEnabled(False)
+            self.btn_export.setEnabled(False)
+            self.progress_bar.setValue(0)
+            self.status_label.setText("Process stopped by user... ")
             QApplication.processEvents()
             self.worker.stop()
             self.btn_stop.setText("Stop")
