@@ -17,12 +17,14 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QCheckBox,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QColor
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, CancelledError
 import json
 from datetime import datetime
+import re
+from threading import Event
 
 
 def load_config(config_path="config.json"):
@@ -42,59 +44,46 @@ INVALID_TEXT = set(CONFIG["invalid_text"])
 
 
 # --- Helper Functions ---
-def check_invalid_text(wb):
+def check_invalid_text(wb, stop_event=None):
+    if stop_event and stop_event.is_set():
+        return "CANCELLED", "Process was cancelled by user."
     for sheet in wb.sheetnames:
         ws = wb[sheet]
+        if stop_event and stop_event.is_set():
+            return "CANCELLED", "Process was cancelled by user."
         for row in ws.iter_rows(values_only=True):
+            if stop_event and stop_event.is_set():
+                return "CANCELLED", "Process was cancelled by user."
             for cell in row:
                 if isinstance(cell, str) and any(text in cell for text in INVALID_TEXT):
                     return f"Contains invalid text in sheet '{sheet}'"
     return None
 
 
-# def column_letter(col_idx):
-#     letters = []
-#     while col_idx > 0:
-#         col_idx, remainder = divmod(col_idx - 1, 26)
-#         letters.append(chr(65 + remainder))
-#     return "".join(reversed(letters))
-
-
-# def check_contains_vietnamese_characters(wb):
-#     vietnamese_chars = set(INVALID_CHARS)
-#     for sheet in wb.sheetnames:
-#         ws = wb[sheet]
-#         for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
-#             for col_idx, cell in enumerate(row, start=1):
-#                 if isinstance(cell, str) and any(
-#                     char in vietnamese_chars for char in cell
-#                 ):
-#                     col_letter = column_letter(col_idx)
-#                     cell_preview = cell[:50] + "..." if len(cell) > 50 else cell
-#                     return (
-#                         f"Contains Vietnamese characters at {sheet}!{col_letter}{row_idx} "
-#                         f"(value: '{cell_preview}')"
-#                     )
-#     return None
-
-
-def check_contains_vietnamese_characters(wb):
+def check_contains_vietnamese_characters(wb, stop_event=None):
     results = ""
+    if stop_event and stop_event.is_set():
+        return results
+    pattern = re.compile(f"[{''.join(re.escape(c) for c in INVALID_CHARS)}]")
     for sheet in wb.sheetnames:
         ws = wb[sheet]
+        if stop_event and stop_event.is_set():
+            return results
         for row in ws.iter_rows():
+            if stop_event and stop_event.is_set():
+                return results
             for cell in row:
+                if stop_event and stop_event.is_set():
+                    return results
                 if cell.value and isinstance(cell.value, str):
-                    for char in INVALID_CHARS:
-                        if char in cell.value:
-                            print(ws.title, cell.value, cell.coordinate)
-                            results += (
-                                f"sheet: {ws.title}, "
-                                f"cell: {cell.coordinate}, "
-                                f"value: {cell.value}; "
-                            )
-                            break
-
+                    if pattern.search(cell.value):
+                        print(ws.title, cell.value, cell.coordinate)
+                        results += (
+                            f"sheet: {ws.title}, "
+                            f"cell: {cell.coordinate}, "
+                            f"value: {cell.value}; "
+                        )
+                        break
     return results
 
 
@@ -126,7 +115,7 @@ def check_required_sheets(wb):
 
 def check_confirm_by(wb):
     if "表紙" not in wb.sheetnames:
-        return None
+        return f"Missing required sheet: '表紙'"
     ws = wb["表紙"]
     for row in ws.iter_rows(
         min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column
@@ -152,7 +141,7 @@ def find_column_indexes(ws, headers=("確認", "参考"), header_rows=(3, 4)):
 
 def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
     if "テスト項目" not in wb.sheetnames:
-        return None
+        return f"Missing required sheet: 'テスト項目"
 
     ws = wb["テスト項目"]
     col_indexes = find_column_indexes(ws)
@@ -184,35 +173,63 @@ def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
 
 
 # --- Main Function ---
-def check_excel_file_advanced(file_path, options):
+def check_excel_file_advanced(file_path, options, stop_event=None):
+    if stop_event and stop_event.is_set():
+        return "CANCELLED", "Process was cancelled by user."
     try:
         error_messages = []
         wb = load_workbook(file_path, data_only=True, read_only=True)
 
+        if stop_event and stop_event.is_set():
+            wb.close()
+            return "CANCELLED", "Process was cancelled by user."
+
         if options.get("check_filename_prefix", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_valid_filename(file_path):
                 error_messages.append(err)
 
-        if err := check_required_sheets(wb):
-            error_messages.append(err)
-
         if options.get("check_invalid_sheets", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_invalid_sheet(wb):
                 error_messages.append(err)
 
+        if options.get("check_required_sheets", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
+            if err := check_required_sheets(wb):
+                error_messages.append(err)
+
         if options.get("check_confirm_cell", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_confirm_by(wb):
                 error_messages.append(err)
 
         if options.get("check_testcase_status", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_status_in_test_items(wb):
                 error_messages.append(err)
 
         if options.get("check_contains_vietnamese_characters", True):
-            if err := check_contains_vietnamese_characters(wb):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
+            if err := check_contains_vietnamese_characters(wb, stop_event):
                 error_messages.append(err)
 
         if options.get("check_invalid_text", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
             if err := check_invalid_text(wb):
                 error_messages.append(err)
 
@@ -245,7 +262,7 @@ class ExcelCheckWorker(QThread):
         self.folder_path = folder_path
         self.options = options
         self.max_workers = max_workers
-        self._is_running = True
+        self._stop_event = Event()
 
     def run(self):
         files = find_excel_files_recursive(self.folder_path)
@@ -256,31 +273,47 @@ class ExcelCheckWorker(QThread):
             return
 
         processed = 0
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(check_excel_file_advanced, file, self.options): file
-                for file in files
-            }
+        chunk_size = 4
 
-            for future in as_completed(futures):
-                if not self._is_running:
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            for i in range(0, total, chunk_size):
+                if self._stop_event.is_set():
                     break
 
-                file_path = futures[future]
-                relative_path = os.path.relpath(file_path, self.folder_path)
-                status, error_msg = future.result()
+                current_chunk = files[i : i + chunk_size]
+                chunk_futures = {
+                    executor.submit(
+                        check_excel_file_advanced, file, self.options, self._stop_event
+                    ): file
+                    for file in current_chunk
+                }
 
-                self.file_result.emit(
-                    self.folder_path, relative_path, status, error_msg
-                )
+                for future in as_completed(chunk_futures):
+                    if self._stop_event.is_set():
+                        break
 
-                processed += 1
-                self.progress_changed.emit(int((processed / total) * 100))
+                    file_path = chunk_futures[future]
+                    try:
+                        relative_path = os.path.relpath(file_path, self.folder_path)
+                        status, error_msg = future.result()
+                        self.file_result.emit(
+                            self.folder_path, relative_path, status, error_msg
+                        )
+                    except Exception as e:
+                        self.file_result.emit(
+                            self.folder_path,
+                            os.path.relpath(file_path, self.folder_path),
+                            "ERROR",
+                            str(e),
+                        )
+
+                    processed += 1
+                    self.progress_changed.emit(int((processed / total) * 100))
 
         self.finished_signal.emit()
 
     def stop(self):
-        self._is_running = False
+        self._stop_event.set()
 
 
 # ----------------- PyQt Main Window -----------------
@@ -311,23 +344,26 @@ class MainWindow(QWidget):
         # Options section
         option_layout = QVBoxLayout()
         self.confirm_cell_cb = QCheckBox("1. Check confirm")
-        self.testcase_status_cb = QCheckBox("2. Check test case status")
-        self.filename_check_cb = QCheckBox("3. Check filename prefix")
-        self.sheet_check_cb = QCheckBox("4. Check contains invalid sheets")
+        self.sheet_req_check_cb = QCheckBox("2. Check required sheets")
+        self.testcase_status_cb = QCheckBox("3. Check test case status")
+        self.filename_check_cb = QCheckBox("4. Check filename prefix")
+        self.sheet_check_cb = QCheckBox("5. Check contains invalid sheets")
         self.check_contains_vietnamese_characters_cb = QCheckBox(
-            "5. Check contains Vietnamese characters for JP files"
+            "6. Check contains Vietnamese characters for JP files"
         )
-        self.check_invalid_text_cb = QCheckBox("6. Check contains invalid text")
+        self.check_invalid_text_cb = QCheckBox("7. Check contains invalid text")
 
         # Set defaults
-        self.confirm_cell_cb.setChecked(True)
-        self.testcase_status_cb.setChecked(True)
-        self.filename_check_cb.setChecked(True)
-        self.sheet_check_cb.setChecked(True)
+        self.confirm_cell_cb.setChecked(False)
+        self.testcase_status_cb.setChecked(False)
+        self.filename_check_cb.setChecked(False)
+        self.sheet_req_check_cb.setChecked(False)
+        self.sheet_check_cb.setChecked(False)
         self.check_contains_vietnamese_characters_cb.setChecked(False)
         self.check_invalid_text_cb.setChecked(False)
 
         option_layout.addWidget(self.confirm_cell_cb)
+        option_layout.addWidget(self.sheet_req_check_cb)
         option_layout.addWidget(self.testcase_status_cb)
         option_layout.addWidget(self.filename_check_cb)
         option_layout.addWidget(self.sheet_check_cb)
@@ -342,7 +378,7 @@ class MainWindow(QWidget):
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self.stop_execution)
-        self.btn_export = QPushButton("Export Results")
+        self.btn_export = QPushButton("Export results to Excel")
         self.btn_export.setEnabled(False)
         self.btn_export.clicked.connect(self.export_results)
         button_layout.addWidget(self.btn_export)
@@ -368,7 +404,7 @@ class MainWindow(QWidget):
 
         # Status label
         config_info_label = QLabel(
-            "Note: Case 3, 4, 5, and 6 are configurable.\n"
+            "Note: Case 2, 3, 4, 5, and 6 are configurable.\n"
             "You can change their rules in the 'config.json' file located in the tool's directory."
         )
         config_info_label.setStyleSheet("color: gray; font-size: 11px;")
@@ -417,6 +453,7 @@ class MainWindow(QWidget):
         options = {
             "check_invalid_sheets": self.sheet_check_cb.isChecked(),
             "check_filename_prefix": self.filename_check_cb.isChecked(),
+            "check_required_sheets": self.sheet_req_check_cb.isChecked(),
             "check_confirm_cell": self.confirm_cell_cb.isChecked(),
             "check_testcase_status": self.testcase_status_cb.isChecked(),
             "check_contains_vietnamese_characters": self.check_contains_vietnamese_characters_cb.isChecked(),
@@ -432,14 +469,19 @@ class MainWindow(QWidget):
 
     def stop_execution(self):
         if self.worker:
-            self.worker.stop()
-            self.worker.wait()
-            self.status_label.setText("Process stopped by user")
-            self.btn_execute.setEnabled(True)
+            self.btn_stop.setText("Stopping...")
             self.btn_stop.setEnabled(False)
+            self.btn_execute.setEnabled(False)
+            self.btn_export.setEnabled(False)
+            self.progress_bar.setValue(0)
+            self.status_label.setText("Process stopped by user... ")
+            QApplication.processEvents()
+            self.worker.stop()
+            self.btn_stop.setText("Stop")
+            self.btn_execute.setEnabled(True)
 
     def add_table_row(self, prefix_path, path, status, error):
-        self.status_label.setText(f"Processing: {path}")
+        # self.status_label.setText(f"Processing: {path}")
         row = self.table.rowCount()
         self.table.insertRow(row)
 
@@ -494,20 +536,25 @@ class MainWindow(QWidget):
     def on_finished(self):
         self.btn_execute.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        total_files = self.table.rowCount()
-        error_count = sum(
-            1 for row in range(total_files) if self.table.item(row, 2).text() == "ERROR"
-        )
-        ok_count = total_files - error_count
-        summary = f"Check completed.\nTotal files: {total_files}\nOK: {ok_count}\nErrors: {error_count}"
-        self.status_label.setText(summary)
-        self.status_label.setText("Process completed")
-        QMessageBox.information(self, "Done", summary)
+
+        if self.worker._stop_event.is_set():
+            self.status_label.setText("Process stopped by user")
+            QMessageBox.information(self, "Stopped", "Process was stopped by user.")
+        else:
+            total_files = self.table.rowCount()
+            error_count = sum(
+                1
+                for row in range(total_files)
+                if self.table.item(row, 2).text() == "ERROR"
+            )
+            ok_count = total_files - error_count
+            summary = f"Check completed.\nTotal files: {total_files}\nOK: {ok_count}\nErrors: {error_count}"
+            self.status_label.setText("Process completed")
+            QMessageBox.information(self, "Done", summary)
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
-            self.worker.wait()
         event.accept()
 
     def export_results(self):
