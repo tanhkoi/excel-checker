@@ -26,6 +26,8 @@ from datetime import datetime
 import re
 from threading import Event
 import xlwings as xw
+import zipfile
+import xml.etree.ElementTree as ET
 
 
 def load_config(config_path="config.json"):
@@ -43,6 +45,137 @@ EXCEL_EXTENSIONS = tuple(CONFIG["excel_extensions"])
 INVALID_CHARS = set(CONFIG["invalid_chars"])
 INVALID_TEXT = set(CONFIG["invalid_text"])
 
+
+# --- Helper Functions v2 ---
+def get_shared_strings(zip_ref):
+    try:
+        with zip_ref.open('xl/sharedStrings.xml') as f:
+            tree = ET.parse(f)
+            root = tree.getroot()
+            ns = {'a': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+            strings = []
+            for si in root.findall('a:si', ns):
+                text_parts = [t.text for t in si.findall('.//a:t', ns) if t.text]
+                strings.append(''.join(text_parts))
+            return strings
+    except KeyError:
+        return []
+
+def get_sheet_names(zip_ref):
+    with zip_ref.open('xl/workbook.xml') as f:
+        tree = ET.parse(f)
+        root = tree.getroot()
+        ns = {'a': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        return [sheet.attrib['name'] for sheet in root.findall('.//a:sheet', ns)]
+
+def read_cells_from_sheet(zip_ref, sheet_filename, shared_strings):
+    with zip_ref.open(sheet_filename) as f:
+        tree = ET.parse(f)
+        root = tree.getroot()
+        ns = {'a': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        values = []
+
+        for c in root.iter('{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c'):
+            cell_type = c.attrib.get('t')
+            v = c.find('a:v', ns)
+            if v is not None:
+                value = v.text
+                if cell_type == 's':
+                    value = shared_strings[int(value)]
+                values.append(value)
+        return values
+
+def check_invalid_text_zip(cell_values, invalid_text_set):
+    for value in cell_values:
+        if isinstance(value, str) and any(t in value for t in invalid_text_set):
+            return f"Contains invalid text: {value}"
+    return None
+
+def check_contains_vn_chars_zip(cell_values, invalid_chars):
+    pattern = re.compile(f"[{''.join(re.escape(c) for c in invalid_chars)}]")
+    for value in cell_values:
+        if isinstance(value, str) and pattern.search(value):
+            return f"Contains Vietnamese character: {value}"
+    return None
+
+def check_incorrect_textbox(zip_ref):
+    try:
+        with zip_ref.open("xl/drawings/drawing1.xml") as f:
+            tree = ET.parse(f)
+            ns = {
+                "xdr": "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
+                "a": "http://schemas.openxmlformats.org/drawingml/2006/main"
+            }
+            root = tree.getroot()
+            texts = []
+            for txBody in root.findall(".//xdr:txBody", ns):
+                for p in txBody.findall(".//a:p", ns):
+                    text_parts = [t.text for t in p.findall(".//a:t", ns) if t.text]
+                    if text_parts:
+                        texts.append("".join(text_parts))
+            for text in texts:
+                if not text or "API" in text:
+                    return f"Incorrect TextBox content: '{text}'"
+    except KeyError:
+        pass
+    return None
+
+def check_excel_file_advanced_zip(file_path, options, stop_event=None):
+    if stop_event and stop_event.is_set():
+        return "CANCELLED", "Stopped by user"
+
+    try:
+        error_messages = []
+
+        with zipfile.ZipFile(file_path, "r") as zip_ref:
+            shared_strings = get_shared_strings(zip_ref)
+            sheet_names = get_sheet_names(zip_ref)
+            sheet_files = [f for f in zip_ref.namelist() if f.startswith("xl/worksheets/sheet") and f.endswith(".xml")]
+
+            # --- filename prefix check ---
+            if options.get("check_filename_prefix", True):
+                err = check_valid_filename(file_path)
+                if err:
+                    error_messages.append(err)
+
+            # --- invalid sheets ---
+            if options.get("check_invalid_sheets", True):
+                for sheet in INVALID_SHEETS:
+                    if sheet in sheet_names:
+                        error_messages.append(f"Contains invalid sheet: {sheet}")
+
+            # --- required sheets ---
+            if options.get("check_required_sheets", True):
+                for sheet in REQUIRED_SHEETS:
+                    if sheet not in sheet_names:
+                        error_messages.append(f"Missing required sheet: {sheet}")
+
+            # --- check cell contents ---
+            for sheet_file in sheet_files:
+                if stop_event and stop_event.is_set():
+                    return "CANCELLED", "Stopped by user"
+                cell_values = read_cells_from_sheet(zip_ref, sheet_file, shared_strings)
+
+                if options.get("check_invalid_text", True):
+                    err = check_invalid_text_zip(cell_values, INVALID_TEXT)
+                    if err:
+                        error_messages.append(err)
+
+                if options.get("check_contains_vietnamese_characters", True):
+                    err = check_contains_vn_chars_zip(cell_values, INVALID_CHARS)
+                    if err:
+                        error_messages.append(err)
+
+            # --- check text box ---
+            if options.get("check_incorrect_tb_content", True):
+                err = check_incorrect_textbox(zip_ref)
+                if err:
+                    error_messages.append(err)
+
+        return ("ERROR", ", ".join(error_messages)) if error_messages else ("OK", "")
+
+    except Exception as e:
+        return "ERROR", str(e)
 
 # --- Helper Functions ---
 def check_invalid_text(wb, stop_event=None):
@@ -329,7 +462,7 @@ class ExcelCheckWorker(QThread):
                 current_chunk = files[i : i + chunk_size]
                 chunk_futures = {
                     executor.submit(
-                        check_excel_file_advanced, file, self.options, self._stop_event
+                        check_excel_file_advanced_zip, file, self.options, self._stop_event
                     ): file
                     for file in current_chunk
                 }
