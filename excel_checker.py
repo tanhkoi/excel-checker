@@ -25,6 +25,7 @@ import json
 from datetime import datetime
 import re
 from threading import Event
+import xlwings as xw
 
 
 def load_config(config_path="config.json"):
@@ -172,6 +173,44 @@ def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
     )
 
 
+def check_incorrect_tb_content(wb, file_path):
+    print(file_path)
+    app = None
+    try:
+        app = xw.App(visible=False)
+        xlwb = app.books.open(file_path, read_only=True)
+        error_msgs = []
+        try:
+            shape = next(
+                (s for s in xlwb.sheets[0].shapes if s.name == "Text Box 1"), None
+            )
+            if shape:
+                text = ""
+                try:
+                    text = shape.text
+                except Exception:
+                    try:
+                        text = shape.api.TextFrame2.TextRange.Text
+                    except Exception:
+                        text = ""
+                if not text or "API" in text:
+                    error_msgs.append(
+                        f"Sheet '{xlwb.sheets[0].name}': 'Text Box 1' incorrect content: '{text}'"
+                    )
+        except Exception as e:
+            error_msgs.append(
+                f"Sheet '{xlwb.sheets[0].name}': Error reading Text Box 1 ({e})"
+            )
+        xlwb.close()
+        if app:
+            app.quit()
+        return "; ".join(error_msgs) if error_msgs else None
+    except Exception as e:
+        if app:
+            app.quit()
+        return f"Error opening file with xlwings: {e}"
+
+
 # --- Main Function ---
 def check_excel_file_advanced(file_path, options, stop_event=None):
     if stop_event and stop_event.is_set():
@@ -231,6 +270,13 @@ def check_excel_file_advanced(file_path, options, stop_event=None):
                 wb.close()
                 return "CANCELLED", "Process was cancelled by user."
             if err := check_invalid_text(wb):
+                error_messages.append(err)
+
+        if options.get("check_incorrect_tb_content", True):
+            if stop_event and stop_event.is_set():
+                wb.close()
+                return "CANCELLED", "Process was cancelled by user."
+            if err := check_incorrect_tb_content(wb, file_path):
                 error_messages.append(err)
 
         wb.close()
@@ -352,6 +398,9 @@ class MainWindow(QWidget):
             "6. Check contains Vietnamese characters for JP files"
         )
         self.check_invalid_text_cb = QCheckBox("7. Check contains invalid text")
+        self.check_incorrect_tb_content_cb = QCheckBox(
+            "8. Check incorrect 'Text Box 1' content"
+        )
 
         # Set defaults
         self.confirm_cell_cb.setChecked(False)
@@ -361,6 +410,7 @@ class MainWindow(QWidget):
         self.sheet_check_cb.setChecked(False)
         self.check_contains_vietnamese_characters_cb.setChecked(False)
         self.check_invalid_text_cb.setChecked(False)
+        self.check_incorrect_tb_content_cb.setChecked(False)
 
         option_layout.addWidget(self.confirm_cell_cb)
         option_layout.addWidget(self.sheet_req_check_cb)
@@ -369,6 +419,7 @@ class MainWindow(QWidget):
         option_layout.addWidget(self.sheet_check_cb)
         option_layout.addWidget(self.check_contains_vietnamese_characters_cb)
         option_layout.addWidget(self.check_invalid_text_cb)
+        option_layout.addWidget(self.check_incorrect_tb_content_cb)
 
         # Button section
         button_layout = QHBoxLayout()
@@ -458,6 +509,7 @@ class MainWindow(QWidget):
             "check_testcase_status": self.testcase_status_cb.isChecked(),
             "check_contains_vietnamese_characters": self.check_contains_vietnamese_characters_cb.isChecked(),
             "check_invalid_text": self.check_invalid_text_cb.isChecked(),
+            "check_incorrect_tb_content": self.check_incorrect_tb_content_cb.isChecked(),
         }
 
         load_config()
