@@ -80,29 +80,149 @@ def read_cells_from_sheet(zip_ref, sheet_filename, shared_strings):
         for c in root.iter(
             "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c"
         ):
+            cell_ref = c.attrib.get("r")
             cell_type = c.attrib.get("t")
             v = c.find("a:v", ns)
             if v is not None:
                 value = v.text
                 if cell_type == "s":
                     value = shared_strings[int(value)]
-                values.append(value)
+                values.append((cell_ref, value))
         return values
 
 
-def check_invalid_text_zip(cell_values, invalid_text_set):
-    for value in cell_values:
+def check_confirm_by_zip(zip_ref, shared_strings, sheet_names):
+    try:
+        if "表紙" not in sheet_names:
+            return "Missing required sheet: '表紙'"
+        sheet_idx = sheet_names.index("表紙") + 1
+        sheet_file = f"xl/worksheets/sheet{sheet_idx}.xml"
+        with zip_ref.open(sheet_file) as f:
+            tree = ET.parse(f)
+            root = tree.getroot()
+            ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+            cells = {}
+            for c in root.iter(
+                "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c"
+            ):
+                cell_ref = c.attrib.get("r")
+                cell_type = c.attrib.get("t")
+                v = c.find("a:v", ns)
+                value = None
+                if v is not None:
+                    value = v.text
+                    if cell_type == "s":
+                        value = shared_strings[int(value)]
+                cells[cell_ref] = value
+            for cell_ref, value in cells.items():
+                if value == "確認":
+                    m = re.match(r"([A-Z]+)([0-9]+)", cell_ref)
+                    if not m:
+                        continue
+                    col, row = m.group(1), int(m.group(2))
+                    below_ref = f"{col}{row+1}"
+                    below_value = cells.get(below_ref)
+                    if below_value is None:
+                        return "Missing Confirm"
+                    else:
+                        return None
+    except Exception as e:
+        return f"Error in check_confirm_by_zip: {e}"
+    return None
+
+
+def check_status_in_test_items_zip(
+    zip_ref, shared_strings, sheet_names, max_rows=1000, empty_limit=10
+):
+    def col_num_to_letter(col_num):
+        result = ""
+        while col_num > 0:
+            col_num -= 1
+            result = chr(65 + col_num % 26) + result
+            col_num //= 26
+        return result
+
+    try:
+        if "テスト項目" not in sheet_names:
+            return "Missing required sheet: 'テスト項目'"
+        sheet_idx = sheet_names.index("テスト項目") + 1
+        sheet_file = f"xl/worksheets/sheet{sheet_idx}.xml"
+        with zip_ref.open(sheet_file) as f:
+            tree = ET.parse(f)
+            root = tree.getroot()
+            ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+            cells = {}
+            for c in root.iter(
+                "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c"
+            ):
+                cell_ref = c.attrib.get("r")
+                cell_type = c.attrib.get("t")
+                v = c.find("a:v", ns)
+                value = None
+                if v is not None:
+                    value = v.text
+                    if cell_type == "s":
+                        value = shared_strings[int(value)]
+                cells[cell_ref] = value
+
+            confirm_col = None
+            for header_row in [3, 4]:
+                for col in range(50, 100):
+                    col_letter = col_num_to_letter(col)
+                    cell_ref = f"{col_letter}{header_row}"
+                    cell_value = cells.get(cell_ref)
+                    if cell_value == "確認":
+                        confirm_col = col_letter
+                        break
+                if confirm_col:
+                    break
+
+            if not confirm_col:
+                return "Column '確認' not found"
+
+            error_rows = []
+            consecutive_empty = 0
+            for row in range(5, max_rows + 1):
+                b_cell_ref = f"B{row}"
+                b_value = cells.get(b_cell_ref)
+                if b_value and str(b_value).strip():
+                    consecutive_empty = 0
+                    status_cell_ref = f"{confirm_col}{row}"
+                    status_value = cells.get(status_cell_ref)
+                    if (
+                        status_value is None
+                        or str(status_value).strip().upper() != "OK"
+                    ):
+                        error_rows.append(str(b_value).strip())
+                else:
+                    consecutive_empty += 1
+                    if consecutive_empty >= empty_limit:
+                        break
+
+            return (
+                f"{len(error_rows)} TC(s) != 'OK': " + "; ".join(error_rows)
+                if error_rows
+                else None
+            )
+    except Exception as e:
+        return f"Error in check_status_in_test_items_zip: {e}"
+    return None
+
+
+def check_invalid_text_zip(cell_values, sheet_name, invalid_text_set):
+    for cell_ref, value in cell_values:
         if isinstance(value, str) and any(t in value for t in invalid_text_set):
-            return f"Contains invalid text: {value}"
+            return f"{sheet_name}: Contains invalid text: {cell_ref}->{value}"
     return None
 
 
-def check_contains_vn_chars_zip(cell_values, invalid_chars):
+def check_contains_vn_chars_zip(cell_values, sheet_name, invalid_chars):
+    results = ""
     pattern = re.compile(f"[{''.join(re.escape(c) for c in invalid_chars)}]")
-    for value in cell_values:
-        if isinstance(value, str) and pattern.search(value):
-            return f"Contains Vietnamese character: {value}"
-    return None
+    for cell_ref, cell_value in cell_values:
+        if isinstance(cell_value, str) and pattern.search(cell_value):
+            results += f"{sheet_name}: {cell_ref}->{cell_value} "
+    return results
 
 
 def check_incorrect_textbox(zip_ref):
@@ -160,20 +280,35 @@ def check_excel_file_advanced_zip(file_path, options, stop_event=None):
                     if sheet not in sheet_names:
                         error_messages.append(f"Missing required sheet: {sheet}")
 
-            for sheet_file in sheet_files:
+            for idx, sheet_file in enumerate(sheet_files):
                 if stop_event and stop_event.is_set():
                     return "CANCELLED", "Stopped by user"
                 cell_values = read_cells_from_sheet(zip_ref, sheet_file, shared_strings)
+                sheet_name = sheet_names[idx] if idx < len(sheet_names) else sheet_file
 
                 if options.get("check_invalid_text", True):
-                    err = check_invalid_text_zip(cell_values, INVALID_TEXT)
+                    err = check_invalid_text_zip(cell_values, sheet_name, INVALID_TEXT)
                     if err:
                         error_messages.append(err)
 
                 if options.get("check_contains_vietnamese_characters", True):
-                    err = check_contains_vn_chars_zip(cell_values, INVALID_CHARS)
+                    err = check_contains_vn_chars_zip(
+                        cell_values, sheet_name, INVALID_CHARS
+                    )
                     if err:
                         error_messages.append(err)
+
+            if options.get("check_confirm_cell", True):
+                err = check_confirm_by_zip(zip_ref, shared_strings, sheet_names)
+                if err:
+                    error_messages.append(err)
+
+            if options.get("check_testcase_status", True):
+                err = check_status_in_test_items_zip(
+                    zip_ref, shared_strings, sheet_names
+                )
+                if err:
+                    error_messages.append(err)
 
             if options.get("check_incorrect_tb_content", True):
                 err = check_incorrect_textbox(zip_ref)
