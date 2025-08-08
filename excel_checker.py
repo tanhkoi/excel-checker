@@ -559,6 +559,7 @@ class MainWindow(QWidget):
         self.btn_execute.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.status_label.setText("Processing...")
+        self.table.setSortingEnabled(False)
 
         options = {
             "check_invalid_sheets":                 self.sheet_check_cb.isChecked(),
@@ -586,6 +587,7 @@ class MainWindow(QWidget):
             self.btn_export.setEnabled(False)
             self.progress_bar.setValue(0)
             self.status_label.setText("Process stopped by user... ")
+            self.table.setSortingEnabled(False)
             QApplication.processEvents()
             self.worker.stop()
             self.btn_stop.setText("Stop")
@@ -645,6 +647,7 @@ class MainWindow(QWidget):
     def on_finished(self):
         self.btn_execute.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.table.setSortingEnabled(True)
 
         if self.worker._stop_event.is_set():
             self.status_label.setText("Process stopped by user")
