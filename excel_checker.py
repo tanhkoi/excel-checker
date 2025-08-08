@@ -433,7 +433,7 @@ class ExcelCheckWorker(QThread):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Excel Checker")
+        self.setWindowTitle("Excel Checker v1.3.2")
         self.setGeometry(100, 100, 1000, 600)
         self.worker = None
         self.init_ui()
