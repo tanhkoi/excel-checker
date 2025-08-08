@@ -40,16 +40,15 @@ CONFIG = load_config()
 
 # Constants
 CATEGORY_PREFIX_MAP = CONFIG["category_prefix_map"]
-INVALID_SHEETS = set(CONFIG["invalid_sheets"])
-REQUIRED_SHEETS = set(CONFIG["required_sheets"])
-EXCEL_EXTENSIONS = tuple(CONFIG["excel_extensions"])
-INVALID_CHARS = set(CONFIG["invalid_chars"])
-INVALID_TEXT = set(CONFIG["invalid_text"])
+INVALID_SHEETS      = set(CONFIG["invalid_sheets"])
+REQUIRED_SHEETS     = set(CONFIG["required_sheets"])
+EXCEL_EXTENSIONS    = tuple(CONFIG["excel_extensions"])
+INVALID_CHARS       = set(CONFIG["invalid_chars"])
+INVALID_TEXT        = set(CONFIG["invalid_text"])
 
 
 # ==================== UTILITY FUNCTIONS ====================
 def col_num_to_letter(col_num):
-    """Convert column number to Excel-style letter (1 -> A, 27 -> AA, etc.)"""
     result = ""
     while col_num > 0:
         col_num -= 1
@@ -59,7 +58,6 @@ def col_num_to_letter(col_num):
 
 
 def find_excel_files_recursive(folder_path):
-    """Recursively find all Excel files in a directory"""
     excel_files = []
     for root_dir, _, files in os.walk(folder_path):
         for file in files:
@@ -70,7 +68,6 @@ def find_excel_files_recursive(folder_path):
 
 # ==================== EXCEL FILE CHECKING ====================
 def get_shared_strings(zip_ref):
-    """Extract shared strings from Excel file"""
     try:
         with zip_ref.open("xl/sharedStrings.xml") as f:
             tree = ET.parse(f)
@@ -85,7 +82,6 @@ def get_shared_strings(zip_ref):
 
 
 def get_sheet_names(zip_ref):
-    """Get list of sheet names from Excel file"""
     with zip_ref.open("xl/workbook.xml") as f:
         tree = ET.parse(f)
         root = tree.getroot()
@@ -94,7 +90,6 @@ def get_sheet_names(zip_ref):
 
 
 def read_cells_from_sheet(zip_ref, sheet_filename, shared_strings):
-    """Read cell values from a specific sheet"""
     with zip_ref.open(sheet_filename) as f:
         tree = ET.parse(f)
         root = tree.getroot()
@@ -116,7 +111,6 @@ def read_cells_from_sheet(zip_ref, sheet_filename, shared_strings):
 
 
 def check_confirm_by(zip_ref, shared_strings, sheet_names):
-    """Check for confirmation cell in the cover sheet"""
     try:
         if "表紙" not in sheet_names:
             return "Missing required sheet: '表紙'"
@@ -163,7 +157,6 @@ def check_confirm_by(zip_ref, shared_strings, sheet_names):
 def check_status_in_test_items(
     zip_ref, shared_strings, sheet_names, max_rows=1000, empty_limit=10
 ):
-    """Check test case status in test items sheet"""
     try:
         if "テスト項目" not in sheet_names:
             return "Missing required sheet: 'テスト項目'"
@@ -238,7 +231,6 @@ def check_status_in_test_items(
 
 
 def check_invalid_text(cell_values, sheet_name, invalid_text_set):
-    """Check for invalid text in cell values"""
     for cell_ref, value in cell_values:
         if isinstance(value, str) and any(t in value for t in invalid_text_set):
             return f"{sheet_name}: Contains invalid text: {cell_ref}->{value}"
@@ -246,7 +238,6 @@ def check_invalid_text(cell_values, sheet_name, invalid_text_set):
 
 
 def check_contains_vn_chars(cell_values, sheet_name, invalid_chars):
-    """Check for Vietnamese characters in cell values"""
     results = []
     pattern = re.compile(f"[{''.join(re.escape(c) for c in invalid_chars)}]")
 
@@ -258,7 +249,6 @@ def check_contains_vn_chars(cell_values, sheet_name, invalid_chars):
 
 
 def check_incorrect_textbox(zip_ref):
-    """Check for incorrect textbox content"""
     try:
         with zip_ref.open("xl/drawings/drawing1.xml") as f:
             tree = ET.parse(f)
@@ -285,7 +275,6 @@ def check_incorrect_textbox(zip_ref):
 
 
 def check_valid_filename(file_path):
-    """Validate filename against category prefix rules"""
     filename = os.path.basename(file_path)
     parts = os.path.normpath(file_path).split(os.sep)
 
@@ -298,7 +287,6 @@ def check_valid_filename(file_path):
 
 
 def check_excel_file_advanced(file_path, options, stop_event=None):
-    """Main function to check an Excel file with all specified checks"""
     if stop_event and stop_event.is_set():
         return "CANCELLED", "Stopped by user"
 
