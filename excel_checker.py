@@ -189,7 +189,7 @@ def check_invalid_text(cell_values, sheet_name, invalid_set):
 def check_contains_vn_chars(cell_values, sheet_name, invalid_chars):
     pattern = re.compile(f"[{''.join(re.escape(c) for c in invalid_chars)}]")
     return (
-        " ".join(
+        "".join(
             f"VieChar:{sheet_name}:Cell({ref}):{val}\n"
             for ref, val in cell_values.items()
             if isinstance(val, str) and pattern.search(val)
@@ -219,11 +219,12 @@ def check_sysdate_format(cell_values, sheet_name):
                     and detect.search(value)
                     and not valid.search(value)
                 ):
-                    errors.append(f"SYSDATE:{sheet_name}:Cell({ref})\n")
+                    errors.append(f" Cell({ref})")
     except Exception as e:
         errors.append(f"Error in {sheet_name}: {e}")
-
-    return " ".join(errors) if errors else None
+    if errors:
+        errors = [f"SYSDATE: {sheet_name}: {', '.join(errors)}\n"]
+    return "".join(errors) if errors else None
 
 
 def check_incorrect_textbox(zip_ref):
@@ -322,7 +323,7 @@ def check_excel_file_advanced(file_path, options, stop_event=None):
                 if err := check_incorrect_textbox(zip_ref):
                     errors.append(err)
 
-        return ("ERROR", " ".join(errors)) if errors else ("OK", "")
+        return ("ERROR", "".join(errors)) if errors else ("OK", "")
 
     except Exception as e:
         return "ERROR", f"Unhandled error in {os.path.basename(file_path)}: {str(e)}"
