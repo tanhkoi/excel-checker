@@ -668,19 +668,15 @@ class MainWindow(QWidget):
         input_layout.addWidget(self.btn_select)
 
         # Options section
-        option_layout = QVBoxLayout()
-        self.confirm_cell_cb = QCheckBox("1. Check confirm")
-        self.sheet_req_check_cb = QCheckBox("2. Check required sheets")
-        self.testcase_status_cb = QCheckBox("3. Check test case status")
-        self.filename_check_cb = QCheckBox("4. Check filename prefix")
-        self.sheet_check_cb = QCheckBox("5. Check contains invalid sheets")
-        self.check_contains_vietnamese_characters_cb = QCheckBox(
-            "6. Check contains Vietnamese characters for JP files"
-        )
-        self.check_invalid_text_cb = QCheckBox("7. Check contains invalid text")
-        self.check_incorrect_tb_content_cb = QCheckBox(
-            "8. Check incorrect 'Text Box 1' content"
-        )
+        option_layout                                = QVBoxLayout()
+        self.confirm_cell_cb                         = QCheckBox("1. Check confirm")
+        self.sheet_req_check_cb                      = QCheckBox("2. Check required sheets")
+        self.testcase_status_cb                      = QCheckBox("3. Check test case status")
+        self.filename_check_cb                       = QCheckBox("4. Check filename prefix")
+        self.sheet_check_cb                          = QCheckBox("5. Check contains invalid sheets")
+        self.check_contains_vietnamese_characters_cb = QCheckBox("6. Check contains Vietnamese characters for JP files")
+        self.check_invalid_text_cb                   = QCheckBox("7. Check contains invalid text")
+        self.check_incorrect_tb_content_cb           = QCheckBox("8. Check incorrect 'Text Box 1' content")
 
         # Set defaults
         self.confirm_cell_cb.setChecked(False)
@@ -702,27 +698,28 @@ class MainWindow(QWidget):
         option_layout.addWidget(self.check_incorrect_tb_content_cb)
 
         # Button section
-        button_layout = QHBoxLayout()
+        button_layout    = QHBoxLayout()
+        
         self.btn_execute = QPushButton("Execute")
         self.btn_execute.setEnabled(False)
         self.btn_execute.clicked.connect(self.start_execution)
-        self.btn_stop = QPushButton("Stop")
+        
+        self.btn_stop    = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self.stop_execution)
-        self.btn_export = QPushButton("Export results to Excel")
+        
+        self.btn_export  = QPushButton("Export results to Excel")
         self.btn_export.setEnabled(False)
         self.btn_export.clicked.connect(self.export_results)
+        
         button_layout.addWidget(self.btn_export)
-
         button_layout.addWidget(self.btn_execute)
         button_layout.addWidget(self.btn_stop)
 
         # Table widget
         self.table = QTableWidget()
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(
-            ["Prefix Path", "Relative Path", "Status", "Errors"]
-        )
+        self.table.setHorizontalHeaderLabels(["Prefix Path", "Relative Path", "Status", "Errors"])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.itemDoubleClicked.connect(self.open_selected_file)
@@ -770,9 +767,7 @@ class MainWindow(QWidget):
         self.btn_export.setEnabled(False)
         folder_path = self.folder_input.text().strip()
         if not os.path.isdir(folder_path):
-            QMessageBox.warning(
-                self, "Invalid Folder", "Please provide a valid folder path."
-            )
+            QMessageBox.warning(self, "Invalid Folder", "Please provide a valid folder path.")
             return
 
         self.progress_bar.setValue(0)
@@ -782,14 +777,14 @@ class MainWindow(QWidget):
         self.status_label.setText("Processing...")
 
         options = {
-            "check_invalid_sheets": self.sheet_check_cb.isChecked(),
-            "check_filename_prefix": self.filename_check_cb.isChecked(),
-            "check_required_sheets": self.sheet_req_check_cb.isChecked(),
-            "check_confirm_cell": self.confirm_cell_cb.isChecked(),
-            "check_testcase_status": self.testcase_status_cb.isChecked(),
+            "check_invalid_sheets":                 self.sheet_check_cb.isChecked(),
+            "check_filename_prefix":                self.filename_check_cb.isChecked(),
+            "check_required_sheets":                self.sheet_req_check_cb.isChecked(),
+            "check_confirm_cell":                   self.confirm_cell_cb.isChecked(),
+            "check_testcase_status":                self.testcase_status_cb.isChecked(),
             "check_contains_vietnamese_characters": self.check_contains_vietnamese_characters_cb.isChecked(),
-            "check_invalid_text": self.check_invalid_text_cb.isChecked(),
-            "check_incorrect_tb_content": self.check_incorrect_tb_content_cb.isChecked(),
+            "check_invalid_text":                   self.check_invalid_text_cb.isChecked(),
+            "check_incorrect_tb_content":           self.check_incorrect_tb_content_cb.isChecked(),
         }
 
         load_config()
@@ -897,15 +892,13 @@ class MainWindow(QWidget):
         default_name = (
             f"Excel_Check_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         )
-        # Get save file path
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Save Results", default_name, "Excel Files (*.xlsx);;All Files (*)"
         )
 
         if not file_path:
-            return  # User cancelled
+            return
 
-        # Ensure .xlsx extension
         if not file_path.lower().endswith(".xlsx"):
             file_path += ".xlsx"
 
@@ -917,14 +910,12 @@ class MainWindow(QWidget):
             ws = wb.active
             ws.title = "Check Results"
 
-            # Write headers
             headers = ["Prefix Path", "Relative Path", "Status", "Errors"]
             for col, header in enumerate(headers, 1):
                 cell = ws.cell(row=1, column=col, value=header)
                 cell.font = Font(bold=True)
                 cell.alignment = Alignment(horizontal="center")
 
-            # Write data
             for row in range(self.table.rowCount()):
                 for col in range(self.table.columnCount()):
                     item = self.table.item(row, col)
@@ -932,7 +923,6 @@ class MainWindow(QWidget):
                         row=row + 2, column=col + 1, value=item.text() if item else ""
                     )
 
-            # Auto-size columns
             for column in ws.columns:
                 max_length = 0
                 column_letter = column[0].column_letter
