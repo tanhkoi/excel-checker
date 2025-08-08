@@ -1,7 +1,16 @@
 import sys
 import os
-import time
-from openpyxl import load_workbook
+import re
+import json
+import zipfile
+from datetime import datetime
+from threading import Event
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import xml.etree.ElementTree as ET
+import subprocess
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
 from PyQt5.QtWidgets import (
     QApplication,
     QWidget,
@@ -17,19 +26,11 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QCheckBox,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
-import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed, CancelledError
-import json
-from datetime import datetime
-import re
-from threading import Event
-import xlwings as xw
-import zipfile
-import xml.etree.ElementTree as ET
 
 
+# ==================== CONFIGURATION ====================
 def load_config(config_path="config.json"):
     with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -37,7 +38,7 @@ def load_config(config_path="config.json"):
 
 CONFIG = load_config()
 
-# --- Constants ---
+# Constants
 CATEGORY_PREFIX_MAP = CONFIG["category_prefix_map"]
 INVALID_SHEETS = set(CONFIG["invalid_sheets"])
 REQUIRED_SHEETS = set(CONFIG["required_sheets"])
@@ -46,23 +47,45 @@ INVALID_CHARS = set(CONFIG["invalid_chars"])
 INVALID_TEXT = set(CONFIG["invalid_text"])
 
 
-# --- Helper Functions v2 ---
+# ==================== UTILITY FUNCTIONS ====================
+def col_num_to_letter(col_num):
+    """Convert column number to Excel-style letter (1 -> A, 27 -> AA, etc.)"""
+    result = ""
+    while col_num > 0:
+        col_num -= 1
+        result = chr(65 + col_num % 26) + result
+        col_num //= 26
+    return result
+
+
+def find_excel_files_recursive(folder_path):
+    """Recursively find all Excel files in a directory"""
+    excel_files = []
+    for root_dir, _, files in os.walk(folder_path):
+        for file in files:
+            if file.lower().endswith(EXCEL_EXTENSIONS):
+                excel_files.append(os.path.join(root_dir, file))
+    return excel_files
+
+
+# ==================== EXCEL FILE CHECKING ====================
 def get_shared_strings(zip_ref):
+    """Extract shared strings from Excel file"""
     try:
         with zip_ref.open("xl/sharedStrings.xml") as f:
             tree = ET.parse(f)
             root = tree.getroot()
             ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-            strings = []
-            for si in root.findall("a:si", ns):
-                text_parts = [t.text for t in si.findall(".//a:t", ns) if t.text]
-                strings.append("".join(text_parts))
-            return strings
+            return [
+                "".join(t.text for t in si.findall(".//a:t", ns) if t.text)
+                for si in root.findall("a:si", ns)
+            ]
     except KeyError:
         return []
 
 
 def get_sheet_names(zip_ref):
+    """Get list of sheet names from Excel file"""
     with zip_ref.open("xl/workbook.xml") as f:
         tree = ET.parse(f)
         root = tree.getroot()
@@ -71,6 +94,7 @@ def get_sheet_names(zip_ref):
 
 
 def read_cells_from_sheet(zip_ref, sheet_filename, shared_strings):
+    """Read cell values from a specific sheet"""
     with zip_ref.open(sheet_filename) as f:
         tree = ET.parse(f)
         root = tree.getroot()
@@ -91,17 +115,21 @@ def read_cells_from_sheet(zip_ref, sheet_filename, shared_strings):
         return values
 
 
-def check_confirm_by_zip(zip_ref, shared_strings, sheet_names):
+def check_confirm_by(zip_ref, shared_strings, sheet_names):
+    """Check for confirmation cell in the cover sheet"""
     try:
         if "表紙" not in sheet_names:
             return "Missing required sheet: '表紙'"
+
         sheet_idx = sheet_names.index("表紙") + 1
         sheet_file = f"xl/worksheets/sheet{sheet_idx}.xml"
+
         with zip_ref.open(sheet_file) as f:
             tree = ET.parse(f)
             root = tree.getroot()
             ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
             cells = {}
+
             for c in root.iter(
                 "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c"
             ):
@@ -114,6 +142,7 @@ def check_confirm_by_zip(zip_ref, shared_strings, sheet_names):
                     if cell_type == "s":
                         value = shared_strings[int(value)]
                 cells[cell_ref] = value
+
             for cell_ref, value in cells.items():
                 if value == "確認":
                     m = re.match(r"([A-Z]+)([0-9]+)", cell_ref)
@@ -124,34 +153,30 @@ def check_confirm_by_zip(zip_ref, shared_strings, sheet_names):
                     below_value = cells.get(below_ref)
                     if below_value is None:
                         return "Missing Confirm"
-                    else:
-                        return None
+                    return None
+
     except Exception as e:
-        return f"Error in check_confirm_by_zip: {e}"
+        return f"Error in check_confirm_by: {e}"
     return None
 
 
-def check_status_in_test_items_zip(
+def check_status_in_test_items(
     zip_ref, shared_strings, sheet_names, max_rows=1000, empty_limit=10
 ):
-    def col_num_to_letter(col_num):
-        result = ""
-        while col_num > 0:
-            col_num -= 1
-            result = chr(65 + col_num % 26) + result
-            col_num //= 26
-        return result
-
+    """Check test case status in test items sheet"""
     try:
         if "テスト項目" not in sheet_names:
             return "Missing required sheet: 'テスト項目'"
+
         sheet_idx = sheet_names.index("テスト項目") + 1
         sheet_file = f"xl/worksheets/sheet{sheet_idx}.xml"
+
         with zip_ref.open(sheet_file) as f:
             tree = ET.parse(f)
             root = tree.getroot()
             ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
             cells = {}
+
             for c in root.iter(
                 "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c"
             ):
@@ -165,6 +190,7 @@ def check_status_in_test_items_zip(
                         value = shared_strings[int(value)]
                 cells[cell_ref] = value
 
+            # Find confirmation column
             confirm_col = None
             for header_row in [3, 4]:
                 for col in range(50, 100):
@@ -180,11 +206,13 @@ def check_status_in_test_items_zip(
             if not confirm_col:
                 return "Column '確認' not found"
 
+            # Check test case statuses
             error_rows = []
             consecutive_empty = 0
             for row in range(5, max_rows + 1):
                 b_cell_ref = f"B{row}"
                 b_value = cells.get(b_cell_ref)
+
                 if b_value and str(b_value).strip():
                     consecutive_empty = 0
                     status_cell_ref = f"{confirm_col}{row}"
@@ -205,27 +233,32 @@ def check_status_in_test_items_zip(
                 else None
             )
     except Exception as e:
-        return f"Error in check_status_in_test_items_zip: {e}"
+        return f"Error in check_status_in_test_items: {e}"
     return None
 
 
-def check_invalid_text_zip(cell_values, sheet_name, invalid_text_set):
+def check_invalid_text(cell_values, sheet_name, invalid_text_set):
+    """Check for invalid text in cell values"""
     for cell_ref, value in cell_values:
         if isinstance(value, str) and any(t in value for t in invalid_text_set):
             return f"{sheet_name}: Contains invalid text: {cell_ref}->{value}"
     return None
 
 
-def check_contains_vn_chars_zip(cell_values, sheet_name, invalid_chars):
-    results = ""
+def check_contains_vn_chars(cell_values, sheet_name, invalid_chars):
+    """Check for Vietnamese characters in cell values"""
+    results = []
     pattern = re.compile(f"[{''.join(re.escape(c) for c in invalid_chars)}]")
+
     for cell_ref, cell_value in cell_values:
         if isinstance(cell_value, str) and pattern.search(cell_value):
-            results += f"{sheet_name}: {cell_ref}->{cell_value} "
-    return results
+            results.append(f"{sheet_name}: {cell_ref}->{cell_value}")
+
+    return " ".join(results) if results else None
 
 
 def check_incorrect_textbox(zip_ref):
+    """Check for incorrect textbox content"""
     try:
         with zip_ref.open("xl/drawings/drawing1.xml") as f:
             tree = ET.parse(f)
@@ -235,21 +268,37 @@ def check_incorrect_textbox(zip_ref):
             }
             root = tree.getroot()
             texts = []
+
             for txBody in root.findall(".//xdr:txBody", ns):
                 for p in txBody.findall(".//a:p", ns):
                     text_parts = [t.text for t in p.findall(".//a:t", ns) if t.text]
                     if text_parts:
                         texts.append("".join(text_parts))
+
             for text in texts:
                 if not text or "API" in text:
                     return f"Incorrect TextBox content: '{text}'"
+
     except KeyError:
         pass
     return None
 
 
-# --- Main Function v2 ---
-def check_excel_file_advanced_zip(file_path, options, stop_event=None):
+def check_valid_filename(file_path):
+    """Validate filename against category prefix rules"""
+    filename = os.path.basename(file_path)
+    parts = os.path.normpath(file_path).split(os.sep)
+
+    for folder_name, expected_prefix in CATEGORY_PREFIX_MAP.items():
+        if folder_name in parts:
+            if not filename.startswith(expected_prefix):
+                return f"Invalid filename for '{folder_name}'"
+            break
+    return None
+
+
+def check_excel_file_advanced(file_path, options, stop_event=None):
+    """Main function to check an Excel file with all specified checks"""
     if stop_event and stop_event.is_set():
         return "CANCELLED", "Stopped by user"
 
@@ -265,9 +314,9 @@ def check_excel_file_advanced_zip(file_path, options, stop_event=None):
                 if f.startswith("xl/worksheets/sheet") and f.endswith(".xml")
             ]
 
+            # Perform checks based on options
             if options.get("check_filename_prefix", True):
-                err = check_valid_filename(file_path)
-                if err:
+                if err := check_valid_filename(file_path):
                     error_messages.append(err)
 
             if options.get("check_invalid_sheets", True):
@@ -280,39 +329,37 @@ def check_excel_file_advanced_zip(file_path, options, stop_event=None):
                     if sheet not in sheet_names:
                         error_messages.append(f"Missing required sheet: {sheet}")
 
+            # Process each sheet
             for idx, sheet_file in enumerate(sheet_files):
                 if stop_event and stop_event.is_set():
                     return "CANCELLED", "Stopped by user"
+
                 cell_values = read_cells_from_sheet(zip_ref, sheet_file, shared_strings)
                 sheet_name = sheet_names[idx] if idx < len(sheet_names) else sheet_file
 
                 if options.get("check_invalid_text", True):
-                    err = check_invalid_text_zip(cell_values, sheet_name, INVALID_TEXT)
-                    if err:
+                    if err := check_invalid_text(cell_values, sheet_name, INVALID_TEXT):
                         error_messages.append(err)
 
                 if options.get("check_contains_vietnamese_characters", True):
-                    err = check_contains_vn_chars_zip(
+                    if err := check_contains_vn_chars(
                         cell_values, sheet_name, INVALID_CHARS
-                    )
-                    if err:
+                    ):
                         error_messages.append(err)
 
+            # Additional checks
             if options.get("check_confirm_cell", True):
-                err = check_confirm_by_zip(zip_ref, shared_strings, sheet_names)
-                if err:
+                if err := check_confirm_by(zip_ref, shared_strings, sheet_names):
                     error_messages.append(err)
 
             if options.get("check_testcase_status", True):
-                err = check_status_in_test_items_zip(
+                if err := check_status_in_test_items(
                     zip_ref, shared_strings, sheet_names
-                )
-                if err:
+                ):
                     error_messages.append(err)
 
             if options.get("check_incorrect_tb_content", True):
-                err = check_incorrect_textbox(zip_ref)
-                if err:
+                if err := check_incorrect_textbox(zip_ref):
                     error_messages.append(err)
 
         return ("ERROR", ", ".join(error_messages)) if error_messages else ("OK", "")
@@ -321,258 +368,7 @@ def check_excel_file_advanced_zip(file_path, options, stop_event=None):
         return "ERROR", str(e)
 
 
-# --- Helper Functions ---
-def check_invalid_text(wb, stop_event=None):
-    if stop_event and stop_event.is_set():
-        return "CANCELLED", "Process was cancelled by user."
-    for sheet in wb.sheetnames:
-        ws = wb[sheet]
-        if stop_event and stop_event.is_set():
-            return "CANCELLED", "Process was cancelled by user."
-        for row in ws.iter_rows(values_only=True):
-            if stop_event and stop_event.is_set():
-                return "CANCELLED", "Process was cancelled by user."
-            for cell in row:
-                if isinstance(cell, str) and any(text in cell for text in INVALID_TEXT):
-                    return f"Contains invalid text in sheet '{sheet}'"
-    return None
-
-
-def check_contains_vietnamese_characters(wb, stop_event=None):
-    results = ""
-    if stop_event and stop_event.is_set():
-        return results
-    pattern = re.compile(f"[{''.join(re.escape(c) for c in INVALID_CHARS)}]")
-    for sheet in wb.sheetnames:
-        ws = wb[sheet]
-        if stop_event and stop_event.is_set():
-            return results
-        for row in ws.iter_rows():
-            if stop_event and stop_event.is_set():
-                return results
-            for cell in row:
-                if stop_event and stop_event.is_set():
-                    return results
-                if cell.value and isinstance(cell.value, str):
-                    if pattern.search(cell.value):
-                        print(ws.title, cell.value, cell.coordinate)
-                        results += (
-                            f"sheet: {ws.title}, "
-                            f"cell: {cell.coordinate}, "
-                            f"value: {cell.value}; "
-                        )
-                        break
-    return results
-
-
-def check_valid_filename(file_path):
-    filename = os.path.basename(file_path)
-    parts = os.path.normpath(file_path).split(os.sep)
-
-    for folder_name, expected_prefix in CATEGORY_PREFIX_MAP.items():
-        if folder_name in parts:
-            if not filename.startswith(expected_prefix):
-                return f"Invalid filename for '{folder_name}'"
-            break
-    return None
-
-
-def check_invalid_sheet(wb):
-    for sheet in INVALID_SHEETS:
-        if sheet in wb.sheetnames:
-            return f"Contains invalid sheet: {sheet}"
-    return None
-
-
-def check_required_sheets(wb):
-    for sheet in REQUIRED_SHEETS:
-        if sheet not in wb.sheetnames:
-            return f"Missing required sheet: {sheet}"
-    return None
-
-
-def check_confirm_by(wb):
-    if "表紙" not in wb.sheetnames:
-        return f"Missing required sheet: '表紙'"
-    ws = wb["表紙"]
-    for row in ws.iter_rows(
-        min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column
-    ):
-        for cell in row:
-            if cell.value == "確認":
-                if ws.cell(row=cell.row + 1, column=cell.column).value is None:
-                    return "Missing Confirm"
-                else:
-                    return None
-
-
-def find_column_indexes(ws, headers=("確認", "参考"), header_rows=(3, 4)):
-    found = {}
-    for row in header_rows:
-        for cell in ws[row]:
-            if cell.value in headers and cell.value not in found:
-                found[cell.value] = cell.column
-        if len(found) == len(headers):
-            break
-    return found
-
-
-def check_status_in_test_items(wb, max_rows=1000, empty_limit=10):
-    if "テスト項目" not in wb.sheetnames:
-        return f"Missing required sheet: 'テスト項目"
-
-    ws = wb["テスト項目"]
-    col_indexes = find_column_indexes(ws)
-    if "確認" not in col_indexes:
-        return "Column '確認' not found"
-
-    status_col = col_indexes["確認"]
-    error_rows = []
-    consecutive_empty = 0
-
-    for row in range(5, max_rows + 1):
-        if consecutive_empty >= empty_limit:
-            break
-
-        b_cell = ws.cell(row=row, column=2)
-        if b_cell.value and str(b_cell.value).strip():
-            consecutive_empty = 0
-            status_value = ws.cell(row=row, column=status_col).value
-            if status_value is None or str(status_value).strip().upper() != "OK":
-                error_rows.append(str(b_cell.value).strip())
-        else:
-            consecutive_empty += 1
-
-    return (
-        f"{len(error_rows)} TC(s) != 'OK': " + "; ".join(error_rows)
-        if error_rows
-        else None
-    )
-
-
-def check_incorrect_tb_content(wb, file_path):
-    print(file_path)
-    app = None
-    try:
-        app = xw.App(visible=False)
-        xlwb = app.books.open(file_path, read_only=True)
-        error_msgs = []
-        try:
-            shape = next(
-                (s for s in xlwb.sheets[0].shapes if s.name == "Text Box 1"), None
-            )
-            if shape:
-                text = ""
-                try:
-                    text = shape.text
-                except Exception:
-                    try:
-                        text = shape.api.TextFrame2.TextRange.Text
-                    except Exception:
-                        text = ""
-                if not text or "API" in text:
-                    error_msgs.append(
-                        f"Sheet '{xlwb.sheets[0].name}': 'Text Box 1' incorrect content: '{text}'"
-                    )
-        except Exception as e:
-            error_msgs.append(
-                f"Sheet '{xlwb.sheets[0].name}': Error reading Text Box 1 ({e})"
-            )
-        xlwb.close()
-        if app:
-            app.quit()
-        return "; ".join(error_msgs) if error_msgs else None
-    except Exception as e:
-        if app:
-            app.quit()
-        return f"Error opening file with xlwings: {e}"
-
-
-# --- Main Function ---
-def check_excel_file_advanced(file_path, options, stop_event=None):
-    if stop_event and stop_event.is_set():
-        return "CANCELLED", "Process was cancelled by user."
-    try:
-        error_messages = []
-        wb = load_workbook(file_path, data_only=True, read_only=True)
-
-        if stop_event and stop_event.is_set():
-            wb.close()
-            return "CANCELLED", "Process was cancelled by user."
-
-        if options.get("check_filename_prefix", True):
-            if stop_event and stop_event.is_set():
-                wb.close()
-                return "CANCELLED", "Process was cancelled by user."
-            if err := check_valid_filename(file_path):
-                error_messages.append(err)
-
-        if options.get("check_invalid_sheets", True):
-            if stop_event and stop_event.is_set():
-                wb.close()
-                return "CANCELLED", "Process was cancelled by user."
-            if err := check_invalid_sheet(wb):
-                error_messages.append(err)
-
-        if options.get("check_required_sheets", True):
-            if stop_event and stop_event.is_set():
-                wb.close()
-                return "CANCELLED", "Process was cancelled by user."
-            if err := check_required_sheets(wb):
-                error_messages.append(err)
-
-        if options.get("check_confirm_cell", True):
-            if stop_event and stop_event.is_set():
-                wb.close()
-                return "CANCELLED", "Process was cancelled by user."
-            if err := check_confirm_by(wb):
-                error_messages.append(err)
-
-        if options.get("check_testcase_status", True):
-            if stop_event and stop_event.is_set():
-                wb.close()
-                return "CANCELLED", "Process was cancelled by user."
-            if err := check_status_in_test_items(wb):
-                error_messages.append(err)
-
-        if options.get("check_contains_vietnamese_characters", True):
-            if stop_event and stop_event.is_set():
-                wb.close()
-                return "CANCELLED", "Process was cancelled by user."
-            if err := check_contains_vietnamese_characters(wb, stop_event):
-                error_messages.append(err)
-
-        if options.get("check_invalid_text", True):
-            if stop_event and stop_event.is_set():
-                wb.close()
-                return "CANCELLED", "Process was cancelled by user."
-            if err := check_invalid_text(wb):
-                error_messages.append(err)
-
-        if options.get("check_incorrect_tb_content", True):
-            if stop_event and stop_event.is_set():
-                wb.close()
-                return "CANCELLED", "Process was cancelled by user."
-            if err := check_incorrect_tb_content(wb, file_path):
-                error_messages.append(err)
-
-        wb.close()
-        return ("ERROR", ", ".join(error_messages)) if error_messages else ("OK", "")
-
-    except Exception as e:
-        return "ERROR", str(e)
-
-
-def find_excel_files_recursive(folder_path):
-    excel_files = []
-    for root_dir, _, files in os.walk(folder_path):
-        for file in files:
-            if file.lower().endswith(EXCEL_EXTENSIONS):
-                excel_files.append(os.path.join(root_dir, file))
-    return excel_files
-
-
-# ----------------- Worker Thread -----------------
+# ==================== WORKER THREAD ====================
 class ExcelCheckWorker(QThread):
     progress_changed = pyqtSignal(int)
     file_result = pyqtSignal(
@@ -596,7 +392,7 @@ class ExcelCheckWorker(QThread):
             return
 
         processed = 0
-        chunk_size = 4
+        chunk_size = 4  # Process files in chunks for better progress reporting
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             for i in range(0, total, chunk_size):
@@ -606,7 +402,7 @@ class ExcelCheckWorker(QThread):
                 current_chunk = files[i : i + chunk_size]
                 chunk_futures = {
                     executor.submit(
-                        check_excel_file_advanced_zip,
+                        check_excel_file_advanced,
                         file,
                         self.options,
                         self._stop_event,
@@ -642,14 +438,13 @@ class ExcelCheckWorker(QThread):
         self._stop_event.set()
 
 
-# ----------------- PyQt Main Window -----------------
+# ==================== MAIN WINDOW ====================
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Excel Checker")
         self.setGeometry(100, 100, 1000, 600)
         self.worker = None
-
         self.init_ui()
 
     def init_ui(self):
@@ -678,7 +473,7 @@ class MainWindow(QWidget):
         self.check_invalid_text_cb                   = QCheckBox("7. Check contains invalid text")
         self.check_incorrect_tb_content_cb           = QCheckBox("8. Check incorrect 'Text Box 1' content")
 
-        # Set defaults
+        # Set default states
         self.confirm_cell_cb.setChecked(False)
         self.testcase_status_cb.setChecked(False)
         self.filename_check_cb.setChecked(False)
@@ -732,7 +527,7 @@ class MainWindow(QWidget):
 
         # Status label
         config_info_label = QLabel(
-            "Note: Case 2, 3, 4, 5, and 6 are configurable.\n"
+            "Note: Case 2, 4, 5, 6 and 7 are configurable.\n"
             "You can change their rules in the 'config.json' file located in the tool's directory."
         )
         config_info_label.setStyleSheet("color: gray; font-size: 11px;")
@@ -808,7 +603,6 @@ class MainWindow(QWidget):
             self.btn_execute.setEnabled(True)
 
     def add_table_row(self, prefix_path, path, status, error):
-        # self.status_label.setText(f"Processing: {path}")
         row = self.table.rowCount()
         self.table.insertRow(row)
 
@@ -835,7 +629,6 @@ class MainWindow(QWidget):
         path = os.path.join(
             self.table.item(row, 0).text(), self.table.item(row, 1).text()
         )
-        print(f"Opening file: {path}")
 
         if os.path.exists(path):
             try:
@@ -903,9 +696,6 @@ class MainWindow(QWidget):
             file_path += ".xlsx"
 
         try:
-            from openpyxl import Workbook
-            from openpyxl.styles import Font, Color, Alignment
-
             wb = Workbook()
             ws = wb.active
             ws.title = "Check Results"
