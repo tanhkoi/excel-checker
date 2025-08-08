@@ -439,12 +439,13 @@ class MainWindow(QWidget):
         main_layout = QVBoxLayout()
 
         # Input section
-        input_layout = QHBoxLayout()
+        input_layout      = QHBoxLayout()
+        
         self.folder_input = QLineEdit()
         self.folder_input.setPlaceholderText("Paste or type folder path here...")
         self.folder_input.textChanged.connect(self.on_folder_input_change)
 
-        self.btn_select = QPushButton("Browse")
+        self.btn_select   = QPushButton("Browse")
         self.btn_select.clicked.connect(self.select_folder)
 
         input_layout.addWidget(self.folder_input)
