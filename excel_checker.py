@@ -40,11 +40,11 @@ CONFIG = load_config()
 
 # Constants
 CATEGORY_PREFIX_MAP = CONFIG["category_prefix_map"]
-INVALID_SHEETS      = set(CONFIG["invalid_sheets"])
-REQUIRED_SHEETS     = set(CONFIG["required_sheets"])
-EXCEL_EXTENSIONS    = tuple(CONFIG["excel_extensions"])
-INVALID_CHARS       = set(CONFIG["invalid_chars"])
-INVALID_TEXT        = set(CONFIG["invalid_text"])
+INVALID_SHEETS = set(CONFIG["invalid_sheets"])
+REQUIRED_SHEETS = set(CONFIG["required_sheets"])
+EXCEL_EXTENSIONS = tuple(CONFIG["excel_extensions"])
+INVALID_CHARS = set(CONFIG["invalid_chars"])
+INVALID_TEXT = set(CONFIG["invalid_text"])
 
 
 # ==================== UTILITY FUNCTIONS ====================
@@ -61,7 +61,10 @@ def find_excel_files_recursive(folder_path):
     excel_files = []
     for root_dir, _, files in os.walk(folder_path):
         for file in files:
-            if file.lower().endswith(EXCEL_EXTENSIONS):
+            lower_file = file.lower()
+            if lower_file.startswith("~$"):
+                continue
+            if lower_file.endswith(EXCEL_EXTENSIONS):
                 excel_files.append(os.path.join(root_dir, file))
     return excel_files
 
@@ -439,28 +442,58 @@ class MainWindow(QWidget):
         main_layout = QVBoxLayout()
 
         # Input section
-        input_layout      = QHBoxLayout()
-        
+        input_layout = QHBoxLayout()
         self.folder_input = QLineEdit()
         self.folder_input.setPlaceholderText("Paste or type folder path here...")
         self.folder_input.textChanged.connect(self.on_folder_input_change)
 
-        self.btn_select   = QPushButton("Browse")
+        self.btn_select = QPushButton("Browse")
         self.btn_select.clicked.connect(self.select_folder)
 
         input_layout.addWidget(self.folder_input)
         input_layout.addWidget(self.btn_select)
 
-        # Options section
-        option_layout                                = QVBoxLayout()
-        self.confirm_cell_cb                         = QCheckBox("1. Check confirm")
-        self.sheet_req_check_cb                      = QCheckBox("2. Check required sheets")
-        self.testcase_status_cb                      = QCheckBox("3. Check test case status")
-        self.filename_check_cb                       = QCheckBox("4. Check filename prefix")
-        self.sheet_check_cb                          = QCheckBox("5. Check contains invalid sheets")
-        self.check_contains_vietnamese_characters_cb = QCheckBox("6. Check contains Vietnamese characters for JP files")
-        self.check_invalid_text_cb                   = QCheckBox("7. Check contains invalid text")
-        self.check_incorrect_tb_content_cb           = QCheckBox("8. Check incorrect 'Text Box 1' content")
+        button_layout = QHBoxLayout()
+
+        self.btn_execute = QPushButton("Execute")
+        self.btn_execute.setEnabled(False)
+        self.btn_execute.clicked.connect(self.start_execution)
+
+        self.btn_stop = QPushButton("Stop")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self.stop_execution)
+
+        self.btn_export = QPushButton("Export")
+        self.btn_export.setEnabled(False)
+        self.btn_export.clicked.connect(self.export_results)
+
+        self.btn_select_all = QPushButton("Select All")
+        self.btn_select_all.clicked.connect(self.select_all_options)
+
+        self.btn_deselect_all = QPushButton("Deselect All")
+        self.btn_deselect_all.clicked.connect(self.deselect_all_options)
+
+        button_layout.addWidget(self.btn_select_all)
+        button_layout.addWidget(self.btn_deselect_all)
+        button_layout.addStretch()
+        button_layout.addWidget(self.btn_export)
+        button_layout.addWidget(self.btn_execute)
+        button_layout.addWidget(self.btn_stop)
+
+        options_group = QWidget()
+        options_layout = QVBoxLayout(options_group)
+        options_layout.setContentsMargins(5, 5, 5, 5)
+
+        self.confirm_cell_cb = QCheckBox("1. Check confirm")
+        self.sheet_req_check_cb = QCheckBox("2. Check required sheets")
+        self.testcase_status_cb = QCheckBox("3. Check test case status")
+        self.filename_check_cb = QCheckBox("4. Check filename prefix")
+        self.sheet_check_cb = QCheckBox("5. Check invalid sheets")
+        self.check_contains_vietnamese_characters_cb = QCheckBox(
+            "6. Check Vietnamese chars"
+        )
+        self.check_invalid_text_cb = QCheckBox("7. Check invalid text")
+        self.check_incorrect_tb_content_cb = QCheckBox("8. Check Text Box content")
 
         # Set default states
         self.confirm_cell_cb.setChecked(False)
@@ -472,38 +505,21 @@ class MainWindow(QWidget):
         self.check_invalid_text_cb.setChecked(False)
         self.check_incorrect_tb_content_cb.setChecked(False)
 
-        option_layout.addWidget(self.confirm_cell_cb)
-        option_layout.addWidget(self.sheet_req_check_cb)
-        option_layout.addWidget(self.testcase_status_cb)
-        option_layout.addWidget(self.filename_check_cb)
-        option_layout.addWidget(self.sheet_check_cb)
-        option_layout.addWidget(self.check_contains_vietnamese_characters_cb)
-        option_layout.addWidget(self.check_invalid_text_cb)
-        option_layout.addWidget(self.check_incorrect_tb_content_cb)
-
-        # Button section
-        button_layout    = QHBoxLayout()
-        
-        self.btn_execute = QPushButton("Execute")
-        self.btn_execute.setEnabled(False)
-        self.btn_execute.clicked.connect(self.start_execution)
-        
-        self.btn_stop    = QPushButton("Stop")
-        self.btn_stop.setEnabled(False)
-        self.btn_stop.clicked.connect(self.stop_execution)
-        
-        self.btn_export  = QPushButton("Export results to Excel")
-        self.btn_export.setEnabled(False)
-        self.btn_export.clicked.connect(self.export_results)
-        
-        button_layout.addWidget(self.btn_export)
-        button_layout.addWidget(self.btn_execute)
-        button_layout.addWidget(self.btn_stop)
+        options_layout.addWidget(self.confirm_cell_cb)
+        options_layout.addWidget(self.sheet_req_check_cb)
+        options_layout.addWidget(self.testcase_status_cb)
+        options_layout.addWidget(self.filename_check_cb)
+        options_layout.addWidget(self.sheet_check_cb)
+        options_layout.addWidget(self.check_contains_vietnamese_characters_cb)
+        options_layout.addWidget(self.check_invalid_text_cb)
+        options_layout.addWidget(self.check_incorrect_tb_content_cb)
 
         # Table widget
         self.table = QTableWidget()
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Prefix Path", "Relative Path", "Status", "Errors"])
+        self.table.setHorizontalHeaderLabels(
+            ["Prefix Path", "Relative Path", "Status", "Errors"]
+        )
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.itemDoubleClicked.connect(self.open_selected_file)
@@ -516,8 +532,7 @@ class MainWindow(QWidget):
 
         # Status label
         config_info_label = QLabel(
-            "Note: Case 2, 4, 5, 6 and 7 are configurable.\n"
-            "You can change their rules in the 'config.json' file located in the tool's directory."
+            "Note: Case 2, 4, 5, 6 and 7 are configurable in 'config.json'"
         )
         config_info_label.setStyleSheet("color: gray; font-size: 11px;")
         config_info_label.setWordWrap(True)
@@ -527,13 +542,33 @@ class MainWindow(QWidget):
         # Assemble main layout
         main_layout.addLayout(input_layout)
         main_layout.addLayout(button_layout)
-        main_layout.addWidget(config_info_label)
-        main_layout.addLayout(option_layout)
+        main_layout.addWidget(options_group)
         main_layout.addWidget(self.table)
         main_layout.addWidget(self.progress_bar)
+        main_layout.addWidget(config_info_label)
         main_layout.addWidget(self.status_label)
 
         self.setLayout(main_layout)
+
+    def select_all_options(self):
+        self.confirm_cell_cb.setChecked(True)
+        self.sheet_req_check_cb.setChecked(True)
+        self.testcase_status_cb.setChecked(True)
+        self.filename_check_cb.setChecked(True)
+        self.sheet_check_cb.setChecked(True)
+        self.check_contains_vietnamese_characters_cb.setChecked(True)
+        self.check_invalid_text_cb.setChecked(True)
+        self.check_incorrect_tb_content_cb.setChecked(True)
+
+    def deselect_all_options(self):
+        self.confirm_cell_cb.setChecked(False)
+        self.sheet_req_check_cb.setChecked(False)
+        self.testcase_status_cb.setChecked(False)
+        self.filename_check_cb.setChecked(False)
+        self.sheet_check_cb.setChecked(False)
+        self.check_contains_vietnamese_characters_cb.setChecked(False)
+        self.check_invalid_text_cb.setChecked(False)
+        self.check_incorrect_tb_content_cb.setChecked(False)
 
     def on_folder_input_change(self, text):
         self.btn_execute.setEnabled(os.path.isdir(text.strip()))
@@ -551,7 +586,9 @@ class MainWindow(QWidget):
         self.btn_export.setEnabled(False)
         folder_path = self.folder_input.text().strip()
         if not os.path.isdir(folder_path):
-            QMessageBox.warning(self, "Invalid Folder", "Please provide a valid folder path.")
+            QMessageBox.warning(
+                self, "Invalid Folder", "Please provide a valid folder path."
+            )
             return
 
         self.progress_bar.setValue(0)
@@ -562,14 +599,14 @@ class MainWindow(QWidget):
         self.table.setSortingEnabled(False)
 
         options = {
-            "check_invalid_sheets":                 self.sheet_check_cb.isChecked(),
-            "check_filename_prefix":                self.filename_check_cb.isChecked(),
-            "check_required_sheets":                self.sheet_req_check_cb.isChecked(),
-            "check_confirm_cell":                   self.confirm_cell_cb.isChecked(),
-            "check_testcase_status":                self.testcase_status_cb.isChecked(),
+            "check_invalid_sheets": self.sheet_check_cb.isChecked(),
+            "check_filename_prefix": self.filename_check_cb.isChecked(),
+            "check_required_sheets": self.sheet_req_check_cb.isChecked(),
+            "check_confirm_cell": self.confirm_cell_cb.isChecked(),
+            "check_testcase_status": self.testcase_status_cb.isChecked(),
             "check_contains_vietnamese_characters": self.check_contains_vietnamese_characters_cb.isChecked(),
-            "check_invalid_text":                   self.check_invalid_text_cb.isChecked(),
-            "check_incorrect_tb_content":           self.check_incorrect_tb_content_cb.isChecked(),
+            "check_invalid_text": self.check_invalid_text_cb.isChecked(),
+            "check_incorrect_tb_content": self.check_incorrect_tb_content_cb.isChecked(),
         }
 
         load_config()
@@ -648,6 +685,7 @@ class MainWindow(QWidget):
         self.btn_execute.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.table.setSortingEnabled(True)
+        self.table.sortItems(3, Qt.DescendingOrder)
 
         if self.worker._stop_event.is_set():
             self.status_label.setText("Process stopped by user")
