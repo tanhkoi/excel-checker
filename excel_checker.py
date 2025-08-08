@@ -49,7 +49,6 @@ INVALID_TEXT = set(CONFIG["invalid_text"])
 
 # ==================== UTILITY FUNCTIONS ====================
 def col_num_to_letter(col_num):
-    """Convert column number to Excel-style letter (1 -> A, 27 -> AA, etc.)"""
     result = ""
     while col_num > 0:
         col_num -= 1
@@ -59,18 +58,19 @@ def col_num_to_letter(col_num):
 
 
 def find_excel_files_recursive(folder_path):
-    """Recursively find all Excel files in a directory"""
     excel_files = []
     for root_dir, _, files in os.walk(folder_path):
         for file in files:
-            if file.lower().endswith(EXCEL_EXTENSIONS):
+            lower_file = file.lower()
+            if lower_file.startswith("~$"):
+                continue
+            if lower_file.endswith(EXCEL_EXTENSIONS):
                 excel_files.append(os.path.join(root_dir, file))
     return excel_files
 
 
 # ==================== EXCEL FILE CHECKING ====================
 def get_shared_strings(zip_ref):
-    """Extract shared strings from Excel file"""
     try:
         with zip_ref.open("xl/sharedStrings.xml") as f:
             tree = ET.parse(f)
@@ -85,7 +85,6 @@ def get_shared_strings(zip_ref):
 
 
 def get_sheet_names(zip_ref):
-    """Get list of sheet names from Excel file"""
     with zip_ref.open("xl/workbook.xml") as f:
         tree = ET.parse(f)
         root = tree.getroot()
@@ -94,7 +93,6 @@ def get_sheet_names(zip_ref):
 
 
 def read_cells_from_sheet(zip_ref, sheet_filename, shared_strings):
-    """Read cell values from a specific sheet"""
     with zip_ref.open(sheet_filename) as f:
         tree = ET.parse(f)
         root = tree.getroot()
@@ -116,7 +114,6 @@ def read_cells_from_sheet(zip_ref, sheet_filename, shared_strings):
 
 
 def check_confirm_by(zip_ref, shared_strings, sheet_names):
-    """Check for confirmation cell in the cover sheet"""
     try:
         if "表紙" not in sheet_names:
             return "Missing required sheet: '表紙'"
@@ -163,7 +160,6 @@ def check_confirm_by(zip_ref, shared_strings, sheet_names):
 def check_status_in_test_items(
     zip_ref, shared_strings, sheet_names, max_rows=1000, empty_limit=10
 ):
-    """Check test case status in test items sheet"""
     try:
         if "テスト項目" not in sheet_names:
             return "Missing required sheet: 'テスト項目'"
@@ -228,7 +224,7 @@ def check_status_in_test_items(
                         break
 
             return (
-                f"{len(error_rows)} TC(s) != 'OK': " + "; ".join(error_rows)
+                f"{len(error_rows)} TC(s) status != 'OK': " + " + ".join(error_rows)
                 if error_rows
                 else None
             )
@@ -238,7 +234,6 @@ def check_status_in_test_items(
 
 
 def check_invalid_text(cell_values, sheet_name, invalid_text_set):
-    """Check for invalid text in cell values"""
     for cell_ref, value in cell_values:
         if isinstance(value, str) and any(t in value for t in invalid_text_set):
             return f"{sheet_name}: Contains invalid text: {cell_ref}->{value}"
@@ -246,7 +241,6 @@ def check_invalid_text(cell_values, sheet_name, invalid_text_set):
 
 
 def check_contains_vn_chars(cell_values, sheet_name, invalid_chars):
-    """Check for Vietnamese characters in cell values"""
     results = []
     pattern = re.compile(f"[{''.join(re.escape(c) for c in invalid_chars)}]")
 
@@ -258,7 +252,6 @@ def check_contains_vn_chars(cell_values, sheet_name, invalid_chars):
 
 
 def check_incorrect_textbox(zip_ref):
-    """Check for incorrect textbox content"""
     try:
         with zip_ref.open("xl/drawings/drawing1.xml") as f:
             tree = ET.parse(f)
@@ -285,20 +278,18 @@ def check_incorrect_textbox(zip_ref):
 
 
 def check_valid_filename(file_path):
-    """Validate filename against category prefix rules"""
     filename = os.path.basename(file_path)
     parts = os.path.normpath(file_path).split(os.sep)
 
     for folder_name, expected_prefix in CATEGORY_PREFIX_MAP.items():
         if folder_name in parts:
             if not filename.startswith(expected_prefix):
-                return f"Invalid filename for '{folder_name}'"
+                return f"Incorrect filename for '{folder_name}'"
             break
     return None
 
 
 def check_excel_file_advanced(file_path, options, stop_event=None):
-    """Main function to check an Excel file with all specified checks"""
     if stop_event and stop_event.is_set():
         return "CANCELLED", "Stopped by user"
 
@@ -362,7 +353,7 @@ def check_excel_file_advanced(file_path, options, stop_event=None):
                 if err := check_incorrect_textbox(zip_ref):
                     error_messages.append(err)
 
-        return ("ERROR", ", ".join(error_messages)) if error_messages else ("OK", "")
+        return ("ERROR", "; ".join(error_messages)) if error_messages else ("OK", "")
 
     except Exception as e:
         return "ERROR", str(e)
@@ -442,7 +433,7 @@ class ExcelCheckWorker(QThread):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Excel Checker")
+        self.setWindowTitle("Excel Checker v1.3.2")
         self.setGeometry(100, 100, 1000, 600)
         self.worker = None
         self.init_ui()
@@ -462,20 +453,48 @@ class MainWindow(QWidget):
         input_layout.addWidget(self.folder_input)
         input_layout.addWidget(self.btn_select)
 
-        # Options section
-        option_layout = QVBoxLayout()
+        button_layout = QHBoxLayout()
+
+        self.btn_execute = QPushButton("Execute")
+        self.btn_execute.setEnabled(False)
+        self.btn_execute.clicked.connect(self.start_execution)
+
+        self.btn_stop = QPushButton("Stop")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self.stop_execution)
+
+        self.btn_export = QPushButton("Export")
+        self.btn_export.setEnabled(False)
+        self.btn_export.clicked.connect(self.export_results)
+
+        self.btn_select_all = QPushButton("Select All")
+        self.btn_select_all.clicked.connect(self.select_all_options)
+
+        self.btn_deselect_all = QPushButton("Deselect All")
+        self.btn_deselect_all.clicked.connect(self.deselect_all_options)
+
+        button_layout.addWidget(self.btn_select_all)
+        button_layout.addWidget(self.btn_deselect_all)
+        button_layout.addStretch()
+        button_layout.addWidget(self.btn_export)
+        button_layout.addWidget(self.btn_stop)
+        button_layout.addWidget(self.btn_execute)
+
+        options_group = QWidget()
+        options_layout = QHBoxLayout(options_group)
+        options_layout.setContentsMargins(5, 5, 5, 5)
+        options_layout.setSpacing(10)
+
         self.confirm_cell_cb = QCheckBox("1. Check confirm")
-        self.sheet_req_check_cb = QCheckBox("2. Check required sheets")
+        self.sheet_req_check_cb = QCheckBox("2. Check required sheets*")
         self.testcase_status_cb = QCheckBox("3. Check test case status")
-        self.filename_check_cb = QCheckBox("4. Check filename prefix")
-        self.sheet_check_cb = QCheckBox("5. Check contains invalid sheets")
+        self.filename_check_cb = QCheckBox("4. Check filename prefix*")
+        self.sheet_check_cb = QCheckBox("5. Check invalid sheets*")
         self.check_contains_vietnamese_characters_cb = QCheckBox(
-            "6. Check contains Vietnamese characters for JP files"
+            "6. Check Vietnamese chars*"
         )
-        self.check_invalid_text_cb = QCheckBox("7. Check contains invalid text")
-        self.check_incorrect_tb_content_cb = QCheckBox(
-            "8. Check incorrect 'Text Box 1' content"
-        )
+        self.check_invalid_text_cb = QCheckBox("7. Check invalid text*")
+        self.check_incorrect_tb_content_cb = QCheckBox("8. Check Text Box content")
 
         # Set default states
         self.confirm_cell_cb.setChecked(False)
@@ -487,32 +506,15 @@ class MainWindow(QWidget):
         self.check_invalid_text_cb.setChecked(False)
         self.check_incorrect_tb_content_cb.setChecked(False)
 
-        option_layout.addWidget(self.confirm_cell_cb)
-        option_layout.addWidget(self.sheet_req_check_cb)
-        option_layout.addWidget(self.testcase_status_cb)
-        option_layout.addWidget(self.filename_check_cb)
-        option_layout.addWidget(self.sheet_check_cb)
-        option_layout.addWidget(self.check_contains_vietnamese_characters_cb)
-        option_layout.addWidget(self.check_invalid_text_cb)
-        option_layout.addWidget(self.check_incorrect_tb_content_cb)
-
-        # Button section
-        button_layout = QHBoxLayout()
-        self.btn_execute = QPushButton("Execute")
-        self.btn_execute.setEnabled(False)
-        self.btn_execute.clicked.connect(self.start_execution)
-
-        self.btn_stop = QPushButton("Stop")
-        self.btn_stop.setEnabled(False)
-        self.btn_stop.clicked.connect(self.stop_execution)
-
-        self.btn_export = QPushButton("Export results to Excel")
-        self.btn_export.setEnabled(False)
-        self.btn_export.clicked.connect(self.export_results)
-
-        button_layout.addWidget(self.btn_export)
-        button_layout.addWidget(self.btn_execute)
-        button_layout.addWidget(self.btn_stop)
+        options_layout.addWidget(self.confirm_cell_cb)
+        options_layout.addWidget(self.sheet_req_check_cb)
+        options_layout.addWidget(self.testcase_status_cb)
+        options_layout.addWidget(self.filename_check_cb)
+        options_layout.addWidget(self.sheet_check_cb)
+        options_layout.addWidget(self.check_contains_vietnamese_characters_cb)
+        options_layout.addWidget(self.check_invalid_text_cb)
+        options_layout.addWidget(self.check_incorrect_tb_content_cb)
+        options_layout.addStretch()
 
         # Table widget
         self.table = QTableWidget()
@@ -532,8 +534,7 @@ class MainWindow(QWidget):
 
         # Status label
         config_info_label = QLabel(
-            "Note: Case 2, 4, 5, 6 and 7 are configurable.\n"
-            "You can change their rules in the 'config.json' file located in the tool's directory."
+            "Note: Case * are configurable in 'config.json'"
         )
         config_info_label.setStyleSheet("color: gray; font-size: 11px;")
         config_info_label.setWordWrap(True)
@@ -543,13 +544,33 @@ class MainWindow(QWidget):
         # Assemble main layout
         main_layout.addLayout(input_layout)
         main_layout.addLayout(button_layout)
-        main_layout.addWidget(config_info_label)
-        main_layout.addLayout(option_layout)
+        main_layout.addWidget(options_group)
         main_layout.addWidget(self.table)
         main_layout.addWidget(self.progress_bar)
+        main_layout.addWidget(config_info_label)
         main_layout.addWidget(self.status_label)
 
         self.setLayout(main_layout)
+
+    def select_all_options(self):
+        self.confirm_cell_cb.setChecked(True)
+        self.sheet_req_check_cb.setChecked(True)
+        self.testcase_status_cb.setChecked(True)
+        self.filename_check_cb.setChecked(True)
+        self.sheet_check_cb.setChecked(True)
+        self.check_contains_vietnamese_characters_cb.setChecked(True)
+        self.check_invalid_text_cb.setChecked(True)
+        self.check_incorrect_tb_content_cb.setChecked(True)
+
+    def deselect_all_options(self):
+        self.confirm_cell_cb.setChecked(False)
+        self.sheet_req_check_cb.setChecked(False)
+        self.testcase_status_cb.setChecked(False)
+        self.filename_check_cb.setChecked(False)
+        self.sheet_check_cb.setChecked(False)
+        self.check_contains_vietnamese_characters_cb.setChecked(False)
+        self.check_invalid_text_cb.setChecked(False)
+        self.check_incorrect_tb_content_cb.setChecked(False)
 
     def on_folder_input_change(self, text):
         self.btn_execute.setEnabled(os.path.isdir(text.strip()))
@@ -577,6 +598,7 @@ class MainWindow(QWidget):
         self.btn_execute.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.status_label.setText("Processing...")
+        self.table.setSortingEnabled(False)
 
         options = {
             "check_invalid_sheets": self.sheet_check_cb.isChecked(),
@@ -604,6 +626,7 @@ class MainWindow(QWidget):
             self.btn_export.setEnabled(False)
             self.progress_bar.setValue(0)
             self.status_label.setText("Process stopped by user... ")
+            self.table.setSortingEnabled(False)
             QApplication.processEvents()
             self.worker.stop()
             self.btn_stop.setText("Stop")
@@ -663,6 +686,8 @@ class MainWindow(QWidget):
     def on_finished(self):
         self.btn_execute.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.table.setSortingEnabled(True)
+        self.table.sortItems(3, Qt.DescendingOrder)
 
         if self.worker._stop_event.is_set():
             self.status_label.setText("Process stopped by user")
@@ -697,7 +722,7 @@ class MainWindow(QWidget):
         )
 
         if not file_path:
-            return  # User cancelled
+            return
 
         if not file_path.lower().endswith(".xlsx"):
             file_path += ".xlsx"
@@ -707,14 +732,12 @@ class MainWindow(QWidget):
             ws = wb.active
             ws.title = "Check Results"
 
-            # Write headers
             headers = ["Prefix Path", "Relative Path", "Status", "Errors"]
             for col, header in enumerate(headers, 1):
                 cell = ws.cell(row=1, column=col, value=header)
                 cell.font = Font(bold=True)
                 cell.alignment = Alignment(horizontal="center")
 
-            # Write data
             for row in range(self.table.rowCount()):
                 for col in range(self.table.columnCount()):
                     item = self.table.item(row, col)
@@ -722,7 +745,6 @@ class MainWindow(QWidget):
                         row=row + 2, column=col + 1, value=item.text() if item else ""
                     )
 
-            # Auto-size columns
             for column in ws.columns:
                 max_length = 0
                 column_letter = column[0].column_letter
