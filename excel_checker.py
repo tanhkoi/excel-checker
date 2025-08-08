@@ -224,7 +224,7 @@ def check_status_in_test_items(
                         break
 
             return (
-                f"{len(error_rows)} TC(s) != 'OK': " + "; ".join(error_rows)
+                f"{len(error_rows)} TC(s) status != 'OK': " + " + ".join(error_rows)
                 if error_rows
                 else None
             )
@@ -284,7 +284,7 @@ def check_valid_filename(file_path):
     for folder_name, expected_prefix in CATEGORY_PREFIX_MAP.items():
         if folder_name in parts:
             if not filename.startswith(expected_prefix):
-                return f"Invalid filename for '{folder_name}'"
+                return f"Incorrect filename for '{folder_name}'"
             break
     return None
 
@@ -353,7 +353,7 @@ def check_excel_file_advanced(file_path, options, stop_event=None):
                 if err := check_incorrect_textbox(zip_ref):
                     error_messages.append(err)
 
-        return ("ERROR", ", ".join(error_messages)) if error_messages else ("OK", "")
+        return ("ERROR", "; ".join(error_messages)) if error_messages else ("OK", "")
 
     except Exception as e:
         return "ERROR", str(e)
@@ -477,22 +477,23 @@ class MainWindow(QWidget):
         button_layout.addWidget(self.btn_deselect_all)
         button_layout.addStretch()
         button_layout.addWidget(self.btn_export)
-        button_layout.addWidget(self.btn_execute)
         button_layout.addWidget(self.btn_stop)
+        button_layout.addWidget(self.btn_execute)
 
         options_group = QWidget()
-        options_layout = QVBoxLayout(options_group)
+        options_layout = QHBoxLayout(options_group)
         options_layout.setContentsMargins(5, 5, 5, 5)
+        options_layout.setSpacing(10)
 
         self.confirm_cell_cb = QCheckBox("1. Check confirm")
-        self.sheet_req_check_cb = QCheckBox("2. Check required sheets")
+        self.sheet_req_check_cb = QCheckBox("2. Check required sheets*")
         self.testcase_status_cb = QCheckBox("3. Check test case status")
-        self.filename_check_cb = QCheckBox("4. Check filename prefix")
-        self.sheet_check_cb = QCheckBox("5. Check invalid sheets")
+        self.filename_check_cb = QCheckBox("4. Check filename prefix*")
+        self.sheet_check_cb = QCheckBox("5. Check invalid sheets*")
         self.check_contains_vietnamese_characters_cb = QCheckBox(
-            "6. Check Vietnamese chars"
+            "6. Check Vietnamese chars*"
         )
-        self.check_invalid_text_cb = QCheckBox("7. Check invalid text")
+        self.check_invalid_text_cb = QCheckBox("7. Check invalid text*")
         self.check_incorrect_tb_content_cb = QCheckBox("8. Check Text Box content")
 
         # Set default states
@@ -513,6 +514,7 @@ class MainWindow(QWidget):
         options_layout.addWidget(self.check_contains_vietnamese_characters_cb)
         options_layout.addWidget(self.check_invalid_text_cb)
         options_layout.addWidget(self.check_incorrect_tb_content_cb)
+        options_layout.addStretch()
 
         # Table widget
         self.table = QTableWidget()
@@ -532,7 +534,7 @@ class MainWindow(QWidget):
 
         # Status label
         config_info_label = QLabel(
-            "Note: Case 2, 4, 5, 6 and 7 are configurable in 'config.json'"
+            "Note: Case * are configurable in 'config.json'"
         )
         config_info_label.setStyleSheet("color: gray; font-size: 11px;")
         config_info_label.setWordWrap(True)
