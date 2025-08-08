@@ -109,45 +109,6 @@ def extract_cells_from_sheet(zip_ref, sheet_file, shared_strings):
         }
 
 
-def check_sysdate_format(zip_ref, sheet_file, sheet_name, shared_strings):
-    errors = []
-    valid_pattern = re.compile(
-        r"(?:^|[^A-Za-z])SYSDATE\s*\(\s*\)(?:$|[^A-Za-z])", re.IGNORECASE
-    )
-    detect_pattern = re.compile(r"SYSDATE", re.IGNORECASE)
-
-    try:
-        with zip_ref.open(sheet_file) as f:
-            tree = ET.parse(f)
-            root = tree.getroot()
-            for cell in root.iter(
-                "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c"
-            ):
-                cell_ref = cell.attrib.get("r")
-                if not cell_ref:
-                    continue
-
-                # Convert column letters to number
-                col_letter = re.sub(r"\d+", "", cell_ref)
-                col_num = sum(
-                    (ord(c.upper()) - 64) * (26**i)
-                    for i, c in enumerate(col_letter[::-1])
-                )
-
-                if (
-                    CONFIG["sysdate_check_columns"]["start"]
-                    <= col_num
-                    <= CONFIG["sysdate_check_columns"]["end"]
-                ):
-                    value = parse_cell_value(cell, shared_strings)
-                    if isinstance(value, str) and detect_pattern.search(value):
-                        if not valid_pattern.search(value):
-                            errors.append(f"{sheet_name}:{cell_ref}")
-    except Exception as e:
-        errors.append(f"{sheet_name} error: {e}")
-    return ", ".join(errors) if errors else None
-
-
 def check_confirm_by(zip_ref, shared_strings, sheet_names):
     try:
         if "表紙" not in sheet_names:
@@ -163,7 +124,7 @@ def check_confirm_by(zip_ref, shared_strings, sheet_names):
                 if match:
                     below_ref = f"{match.group(1)}{int(match.group(2)) + 1}"
                     if not cells.get(below_ref):
-                        return "Missing Confirm"
+                        return "Missing Confirm\n"
     except Exception as e:
         return f"Error in check_confirm_by: {e}"
     return None
@@ -208,7 +169,7 @@ def check_status_in_test_items(
                 if empty >= empty_limit:
                     break
         return (
-            f"{len(errors)} TC(s) status != 'OK': " + " + ".join(errors)
+            f"{len(errors)} Status != 'OK': " + " + ".join(errors) + "\n"
             if errors
             else None
         )
@@ -219,9 +180,9 @@ def check_status_in_test_items(
 
 
 def check_invalid_text(cell_values, sheet_name, invalid_set):
-    for ref, val in cell_values:
+    for ref, val in cell_values.items():
         if isinstance(val, str) and any(t in val for t in invalid_set):
-            return f"{sheet_name}: Invalid text {ref}->{val}"
+            return f"Invalid txt:{sheet_name}:Cell({ref}):{val}\n"
     return None
 
 
@@ -229,12 +190,40 @@ def check_contains_vn_chars(cell_values, sheet_name, invalid_chars):
     pattern = re.compile(f"[{''.join(re.escape(c) for c in invalid_chars)}]")
     return (
         " ".join(
-            f"{sheet_name}: {ref}->{val}"
-            for ref, val in cell_values
+            f"VieChar:{sheet_name}:Cell({ref}):{val}\n"
+            for ref, val in cell_values.items()
             if isinstance(val, str) and pattern.search(val)
         )
         or None
     )
+
+
+def check_sysdate_format(cell_values, sheet_name):
+    errors = []
+    valid = re.compile(
+        r"(?:^|[^A-Za-z])SYSDATE\s*\(\s*\)(?:$|[^A-Za-z])", re.IGNORECASE
+    )
+    detect = re.compile(r"SYSDATE", re.IGNORECASE)
+
+    try:
+        for ref, value in cell_values.items():
+            col = re.sub(r"\d", "", ref)
+            col_num = sum((ord(c) - 64) * (26**i) for i, c in enumerate(col[::-1]))
+            if (
+                CONFIG["sysdate_check_columns"]["start"]
+                <= col_num
+                <= CONFIG["sysdate_check_columns"]["end"]
+            ):
+                if (
+                    isinstance(value, str)
+                    and detect.search(value)
+                    and not valid.search(value)
+                ):
+                    errors.append(f"SYSDATE:{sheet_name}:Cell({ref})\n")
+    except Exception as e:
+        errors.append(f"Error in {sheet_name}: {e}")
+
+    return " ".join(errors) if errors else None
 
 
 def check_incorrect_textbox(zip_ref):
@@ -247,7 +236,7 @@ def check_incorrect_textbox(zip_ref):
                         t.text for t in p.findall(".//a:t", NS_DRAWING) if t.text
                     )
                     if not text or "API" in text:
-                        return f"Incorrect TextBox content: '{text}'"
+                        return f"Incorrect TextBox: '{text}'\n"
     except KeyError:
         pass
     return None
@@ -259,7 +248,7 @@ def check_valid_filename(file_path):
         if folder in os.path.normpath(file_path).split(
             os.sep
         ) and not filename.startswith(prefix):
-            return f"Incorrect filename for '{folder}'"
+            return f"Incorrect filename for '{folder}'\n"
     return None
 
 
@@ -316,12 +305,9 @@ def check_excel_file_advanced(file_path, options, stop_event=None):
                         errors.append(err)
 
                 if options.get("check_sysdate_format", True):
-                    if err := check_sysdate_format(
-                        zip_ref, sheet_file, sheet_name, shared_strings
-                    ):
-                        errors.append(f"Invalid SYSDATE format: {err}")
+                    if err := check_sysdate_format(cell_values, sheet_name):
+                        errors.append(err)
 
-            # ===== Check global conditions =====
             if options.get("check_confirm_cell", True):
                 if err := check_confirm_by(zip_ref, shared_strings, sheet_names):
                     errors.append(err)
@@ -336,7 +322,7 @@ def check_excel_file_advanced(file_path, options, stop_event=None):
                 if err := check_incorrect_textbox(zip_ref):
                     errors.append(err)
 
-        return ("ERROR", "; ".join(errors)) if errors else ("OK", "")
+        return ("ERROR", " ".join(errors)) if errors else ("OK", "")
 
     except Exception as e:
         return "ERROR", f"Unhandled error in {os.path.basename(file_path)}: {str(e)}"
@@ -478,7 +464,7 @@ class MainWindow(QWidget):
         )
         self.check_invalid_text_cb = QCheckBox("7. Check invalid text*")
         self.check_incorrect_tb_content_cb = QCheckBox("8. Check Text Box content")
-        self.sysdate_check_cb = QCheckBox("9. Check SYSDATE format")
+        self.sysdate_check_cb = QCheckBox("9. Check SYSDATE")
 
         # Set default states
         self.confirm_cell_cb.setChecked(False)
