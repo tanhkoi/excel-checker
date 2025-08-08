@@ -50,5 +50,9 @@
     ],
     "invalid_text": [
         "Postman"
-    ]
+    ],
+    "sysdate_check_columns": {
+        "start": 42,
+        "end": 81
+    }
 }
